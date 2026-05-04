@@ -3,14 +3,23 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-import omni.ext
 import os
+from pathlib import Path
 
-EXTENSION_PATH = os.path.dirname(os.path.abspath(__file__))
-# source/aic_task/aic_task/tasks/manager_based/aic_task/Intrinsic_assets/assets
-ASSETS_PATH = os.path.join(
-    EXTENSION_PATH, "tasks/manager_based/aic_task/Intrinsic_assets", "assets"
-)
+import omni.ext
+import omni.ui
+
+PACKAGE_PATH = Path(__file__).resolve().parent
+INTRINSIC_ASSET_PATH = PACKAGE_PATH / "Intrinsic_assets"
+ASSETS_PATH = INTRINSIC_ASSET_PATH / "assets"
+
+
+def _asset_path(*parts: str) -> str:
+    """Return an intrinsic asset path and fail early if the asset is missing."""
+    path = ASSETS_PATH.joinpath(*parts)
+    if not path.is_file():
+        raise FileNotFoundError(f"[aic_task] Intrinsic asset not found: {path}")
+    return str(path)
 
 
 # Any class derived from `omni.ext.IExt` in top level module (defined in `python.modules` of `extension.toml`) will be
@@ -188,14 +197,16 @@ class ExampleExtension(omni.ext.IExt):
     def import_plugs(self):
         from pxr import Gf, UsdGeom, UsdPhysics, Sdf
 
-        print(f"Extension Path: {EXTENSION_PATH}")
+        print(f"Package Path: {PACKAGE_PATH}")
 
         print(f"Assets Path: {ASSETS_PATH}")
         # list assets
         print(os.listdir(ASSETS_PATH))
 
         # add sc_plug_visual.usd to the stage
-        sc_plug_file_path = os.path.join(ASSETS_PATH, "SC Plug", "sc_plug_visual.usd")
+        sc_plug_file_path = _asset_path("SC Plug", "sc_plug_visual.usd")
+        lc_plug_file_path = _asset_path("LC Plug", "lc_plug_assembly.usd")
+
         # Add reference to the stage
         stage = omni.usd.get_context().get_stage()
         sc_plug_prim = stage.DefinePrim("/World/sc_plug_visual", "Xform")
@@ -209,7 +220,6 @@ class ExampleExtension(omni.ext.IExt):
 
         # add lc plug: LC Plug/lc_plug_assemble.usd
         ropeLength = 0.55
-        lc_plug_file_path = os.path.join(ASSETS_PATH, "LC Plug", "lc_plug_assembly.usd")
         # Add reference to the stage
         lc_plug_prim = stage.DefinePrim("/World/lc_plug_visual", "Xform")
         lc_plug_prim.GetReferences().AddReference(lc_plug_file_path)
