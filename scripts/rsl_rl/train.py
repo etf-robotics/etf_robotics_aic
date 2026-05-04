@@ -226,13 +226,6 @@ def main(
     # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir
 
-    # Skip USD xform mirroring during training; no visual, per-env USD writes
-    # add overhead at scale. Teleop/play/record keep the default (True).
-    if hasattr(env_cfg, "events") and hasattr(
-        env_cfg.events, "randomize_board_and_parts"
-    ):
-        env_cfg.events.randomize_board_and_parts.params["sync_usd_xforms"] = False
-
     # create isaac environment
     env = gym.make(
         args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None
@@ -265,15 +258,58 @@ def main(
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
+    cfg = agent_cfg.to_dict()
+
+    if "policy" in cfg:
+        policy = cfg["policy"]
+
+        cfg["actor"] = {
+            "class_name": "MLPModel",
+            "obs_normalization": False,
+            "hidden_dims": policy["actor_hidden_dims"],
+            "activation": policy["activation"],
+            'distribution_cfg': 
+            {
+                'class_name': 'GaussianDistribution',
+                'init_std': policy["init_noise_std"],
+                'std_type': policy['noise_std_type']
+            }
+        }
+
+        cfg["critic"] = {
+            "class_name": "MLPModel",
+            "hidden_dims": policy["critic_hidden_dims"],
+            "activation": policy["activation"],
+            "obs_normalization": False,
+            'distribution_cfg': None
+        }
+    ##############################################
+    # U IZVORNOJ VERZIJI FAJLA, OVO NIJE POSTOJALO, NEGO JE UMESTO OVOG cfg
+    # KORISCEN agent_cfg.to_dict() DIREKTNO U KREIRANJU RUNNER-A, 
+    # ALI SADA JE POTREBNO DA SE OVO URADI ZBOG RAZLIKE U FORMATU KONFIGURACIJE IZMEĐU
+    # CLI ARGUMENTA I ONOGA STO RUNNER OCEKUJE
+
     # create runner from rsl-rl
     if agent_cfg.class_name == "OnPolicyRunner":
+        # DODAT KOD:
         runner = OnPolicyRunner(
-            env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device
+            env, cfg, log_dir=log_dir, device=agent_cfg.device
         )
+
+        # IZVORNI KOD:
+        # runner = OnPolicyRunner(
+        #     env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device
+        # )
     elif agent_cfg.class_name == "DistillationRunner":
+        # DODAT KOD:
         runner = DistillationRunner(
-            env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device
+            env, cfg, log_dir=log_dir, device=agent_cfg.device
         )
+
+        # IZVORNI KOD:
+        # runner = DistillationRunner(
+        #     env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device
+        # )
     else:
         raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
     # write git state to logs
