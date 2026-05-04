@@ -2,5 +2,3 @@
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
-
-from aic_task.agents.rsl_rl_ppo_cfg import PPORunnerCfg
