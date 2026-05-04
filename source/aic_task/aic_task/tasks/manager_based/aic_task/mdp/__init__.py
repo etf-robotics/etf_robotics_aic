@@ -24,6 +24,8 @@ from .observations import *  # noqa: F401, F403
 from .rewards import (  # noqa: F401
     body_lin_acc_l2,
     ee_reaching_bonus,
+    distance_to_nic_card_l2,
+    ee_orientation_error_to_nic,
     joint_acc_l2,
     joint_pos_limits,
     joint_torques_l2,
@@ -32,4 +34,9 @@ from .rewards import (  # noqa: F401
     position_command_error,
     position_command_error_exp,
     position_command_error_tanh,
+)
+from .terminations import (  # noqa: F401
+    ee_above_port_success,
+    ee_distance_to_port_success,
+    sfp_module_above_nic_card_success,
 )

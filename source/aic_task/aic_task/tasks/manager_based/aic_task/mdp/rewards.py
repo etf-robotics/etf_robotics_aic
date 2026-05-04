@@ -184,3 +184,65 @@ def body_lin_acc_l2(
     return torch.sum(
         torch.norm(asset.data.body_lin_acc_w[:, asset_cfg.body_ids, :], dim=-1), dim=1
     )
+
+#DODATO: Distance from end-effector to NIC card
+
+def distance_to_nic_card_l2(
+    env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg, nic_card_cfg: SceneEntityCfg = SceneEntityCfg("nic_card")
+) -> torch.Tensor:
+    """Penalize the distance from the end-effector to the NIC card using L2-norm."""
+    robot: Articulation = env.scene[asset_cfg.name]
+    nic_card: RigidObject = env.scene[nic_card_cfg.name]
+    
+    ee_idx = robot.find_bodies("gripper_tcp")[0][0]
+    ee_pos_w = robot.data.body_pos_w[:, ee_idx, :]  # type: ignore
+    # Koristi body_ids ako je specificiran (port), inače fallback na root
+    PORT_OFFSET = torch.tensor([0.0, 0.0, 0.05], device=env.device)  # prilagodi
+    # body_ids može biti None, slice(None), ili lista/int
+    body_ids = nic_card_cfg.body_ids
+    if body_ids is not None and not isinstance(body_ids, slice):
+        nic_pos_w = nic_card.data.body_pos_w[:, body_ids[0]]  # type: ignore
+    else:
+        nic_pos_w = nic_card.data.root_pos_w + PORT_OFFSET
+
+    return torch.norm(ee_pos_w - nic_pos_w, dim=1)
+
+def ee_orientation_error_to_nic(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    nic_card_cfg: SceneEntityCfg = SceneEntityCfg("nic_card"),
+    z_rot_offset_deg: float = 180.0,  # <- lako menjivo ako ikad treba
+) -> torch.Tensor:
+    """Penalize misalignment between EE orientation and NIC card port orientation.
+    
+    Accounts for coordinate frame mismatch between gripper_tcp and NIC body
+    by pre-rotating the NIC quaternion by z_rot_offset_deg around its local Z axis.
+    """
+    robot: Articulation = env.scene[asset_cfg.name]
+    nic_card: RigidObject = env.scene[nic_card_cfg.name]
+
+    # EE orijentacija
+    ee_quat_w = robot.data.body_quat_w[:, asset_cfg.body_ids[0]]  # (N, 4) wxyz
+
+    # NIC orijentacija
+    body_ids = nic_card_cfg.body_ids
+    if body_ids is not None and not isinstance(body_ids, slice):
+        nic_quat_w = nic_card.data.body_quat_w[:, body_ids[0]]
+    else:
+        nic_quat_w = nic_card.data.root_quat_w
+
+    # --- Korekcija koordinatnog sistema ---
+    # 180° oko Z: q = (w=0, x=0, y=0, z=1)
+    # Generalno za bilo koji ugao:
+    half_angle = torch.tensor(z_rot_offset_deg / 2.0 * torch.pi / 180.0)
+    q_correction = torch.tensor(
+        [torch.cos(half_angle), 0.0, 0.0, torch.sin(half_angle)],  # wxyz
+        dtype=nic_quat_w.dtype,
+        device=nic_quat_w.device,
+    ).unsqueeze(0).expand(nic_quat_w.shape[0], -1)  # (N, 4)
+
+    # Rotiramo NIC frame: q_corrected = q_nic * q_offset  (local Z rot)
+    nic_quat_corrected = quat_mul(nic_quat_w, q_correction)
+    # --------------------------------------
+
+    return quat_error_magnitude(ee_quat_w, nic_quat_corrected)
