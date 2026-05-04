@@ -141,7 +141,11 @@ from isaaclab.envs import (
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import dump_yaml
 
-from isaaclab_rl.rsl_rl import RslRlBaseRunnerCfg, RslRlVecEnvWrapper
+from isaaclab_rl.rsl_rl import (
+    RslRlBaseRunnerCfg,
+    RslRlVecEnvWrapper,
+    handle_deprecated_rsl_rl_cfg,
+)
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import get_checkpoint_path
@@ -174,6 +178,9 @@ def main(
         if args_cli.max_iterations is not None
         else agent_cfg.max_iterations
     )
+
+    # handle deprecated configurations across RSL-RL version boundaries
+    agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, installed_version)
 
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
@@ -258,58 +265,15 @@ def main(
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
 
-    cfg = agent_cfg.to_dict()
-
-    if "policy" in cfg:
-        policy = cfg["policy"]
-
-        cfg["actor"] = {
-            "class_name": "MLPModel",
-            "obs_normalization": False,
-            "hidden_dims": policy["actor_hidden_dims"],
-            "activation": policy["activation"],
-            'distribution_cfg': 
-            {
-                'class_name': 'GaussianDistribution',
-                'init_std': policy["init_noise_std"],
-                'std_type': policy['noise_std_type']
-            }
-        }
-
-        cfg["critic"] = {
-            "class_name": "MLPModel",
-            "hidden_dims": policy["critic_hidden_dims"],
-            "activation": policy["activation"],
-            "obs_normalization": False,
-            'distribution_cfg': None
-        }
-    ##############################################
-    # U IZVORNOJ VERZIJI FAJLA, OVO NIJE POSTOJALO, NEGO JE UMESTO OVOG cfg
-    # KORISCEN agent_cfg.to_dict() DIREKTNO U KREIRANJU RUNNER-A, 
-    # ALI SADA JE POTREBNO DA SE OVO URADI ZBOG RAZLIKE U FORMATU KONFIGURACIJE IZMEĐU
-    # CLI ARGUMENTA I ONOGA STO RUNNER OCEKUJE
-
     # create runner from rsl-rl
     if agent_cfg.class_name == "OnPolicyRunner":
-        # DODAT KOD:
         runner = OnPolicyRunner(
-            env, cfg, log_dir=log_dir, device=agent_cfg.device
+            env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device
         )
-
-        # IZVORNI KOD:
-        # runner = OnPolicyRunner(
-        #     env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device
-        # )
     elif agent_cfg.class_name == "DistillationRunner":
-        # DODAT KOD:
         runner = DistillationRunner(
-            env, cfg, log_dir=log_dir, device=agent_cfg.device
+            env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device
         )
-
-        # IZVORNI KOD:
-        # runner = DistillationRunner(
-        #     env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device
-        # )
     else:
         raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
     # write git state to logs

@@ -9,6 +9,7 @@
 
 import argparse
 import sys
+
 from isaaclab.app import AppLauncher
 
 # local imports
@@ -74,11 +75,13 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 
+import importlib.metadata as metadata
 import os
 import time
 
 import gymnasium as gym
 import torch
+from packaging import version
 from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 
 from isaaclab.envs import (
@@ -96,6 +99,7 @@ from isaaclab_rl.rsl_rl import (
     RslRlVecEnvWrapper,
     export_policy_as_jit,
     export_policy_as_onnx,
+    handle_deprecated_rsl_rl_cfg,
 )
 from isaaclab_rl.utils.pretrained_checkpoint import get_published_pretrained_checkpoint
 
@@ -104,6 +108,8 @@ from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import aic_task.tasks  # noqa: F401
+
+installed_version = metadata.version("rsl-rl-lib")
 
 
 @hydra_task_config(args_cli.task, args_cli.agent)
@@ -121,6 +127,9 @@ def main(
     env_cfg.scene.num_envs = (
         args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     )
+
+    # handle deprecated configurations across RSL-RL version boundaries
+    agent_cfg = handle_deprecated_rsl_rl_cfg(agent_cfg, installed_version)
 
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
@@ -178,108 +187,45 @@ def main(
 
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     # load previously trained model
-    ################################################################################
-    # ... (inside main function, before line 183) DODATI KOD
-
-    # Convert config to dict to check/fix structure
-    #Build cfg dict the same way train.py does
-    # Build cfg dict the same way train.py does
-    cfg = agent_cfg.to_dict()
-
-    if "policy" in cfg:
-        policy = cfg["policy"]
-        cfg["actor"] = {
-            "class_name": "MLPModel",
-            "obs_normalization": False,
-            "hidden_dims": policy["actor_hidden_dims"],
-            "activation": policy["activation"],
-            "distribution_cfg": {
-                "class_name": "GaussianDistribution",
-                "init_std": policy["init_noise_std"],
-                "std_type": policy["noise_std_type"],
-            },
-        }
-        cfg["critic"] = {
-            "class_name": "MLPModel",
-            "hidden_dims": policy["critic_hidden_dims"],
-            "activation": policy["activation"],
-            "obs_normalization": False,
-            "distribution_cfg": None,
-        }
-
-    print(f"[INFO]: Loading model checkpoint from: {resume_path}")
-
     if agent_cfg.class_name == "OnPolicyRunner":
-        runner = OnPolicyRunner(env, cfg, log_dir=None, device=agent_cfg.device)
+        runner = OnPolicyRunner(
+            env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device
+        )
     elif agent_cfg.class_name == "DistillationRunner":
-        runner = DistillationRunner(env, cfg, log_dir=None, device=agent_cfg.device)
-    else:   
+        runner = DistillationRunner(
+            env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device
+        )
+    else:
         raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
-
-    # if agent_cfg.class_name == "OnPolicyRunner":
-    #     runner = OnPolicyRunner(env, cfg, log_dir=None, device=agent_cfg.device)
-    # elif agent_cfg.class_name == "DistillationRunner":
-    #     runner = DistillationRunner(env, cfg, log_dir=None, device=agent_cfg.device)
-    # else:
-    #     raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
-
-    # if agent_cfg.class_name == "OnPolicyRunner":
-    #     runner = OnPolicyRunner(
-    #         env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device
-    #     )
-    # elif agent_cfg.class_name == "DistillationRunner":
-    #     runner = DistillationRunner(
-    #         env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device
-    #     )
-    # else:
-    #     raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
-    # runner.load(resume_path)
-    # ... ################################################################################################
     runner.load(resume_path)
     # obtain the trained policy for inference
     policy = runner.get_inference_policy(device=env.unwrapped.device)
 
-    # extract the neural network module
-    # we do this in a try-except to maintain backwards compatibility.
-    
-    # # version 2.3 onwards
-    # policy_nn = runner.alg.policy
-    # Extract the neural network module - covers rsl_rl v3.x, v2.3, and v2.2
-    # Extract the neural network module
-    if hasattr(runner.alg, "actor") and not hasattr(runner.alg.actor, "actor"):
-        # rsl_rl 3.x: runner.alg IS the policy container (has .actor as submodule)
-        policy_nn = runner.alg
-    elif hasattr(runner.alg, "policy"):
-        policy_nn = runner.alg.policy        # 2.3
-    elif hasattr(runner.alg, "actor_critic"):
-        policy_nn = runner.alg.actor_critic  # 2.2
-    else:
-        raise AttributeError(
-            f"Cannot find policy network on runner.alg. Available: {dir(runner.alg)}"
-        )
-    print(dir(runner.alg))
-    # extract the normalizer
-    export_nn = runner.alg.actor
-
-    # Normalizer lives on the actor model
-    if hasattr(export_nn, "actor_obs_normalizer"):
-        normalizer = export_nn.actor_obs_normalizer
-    elif hasattr(export_nn, "student_obs_normalizer"):
-        normalizer = export_nn.student_obs_normalizer
-    else:
-        normalizer = None
-
-    # export policy to onnx/jit
+    # export the trained policy to JIT and ONNX formats
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
-    try:
+
+    if version.parse(installed_version) >= version.parse("4.0.0"):
+        runner.export_policy_to_jit(path=export_model_dir, filename="policy.pt")
+        runner.export_policy_to_onnx(path=export_model_dir, filename="policy.onnx")
+    else:
+        if version.parse(installed_version) >= version.parse("2.3.0"):
+            policy_nn = runner.alg.policy
+        else:
+            policy_nn = runner.alg.actor_critic
+
+        if hasattr(policy_nn, "actor_obs_normalizer"):
+            normalizer = policy_nn.actor_obs_normalizer
+        elif hasattr(policy_nn, "student_obs_normalizer"):
+            normalizer = policy_nn.student_obs_normalizer
+        else:
+            normalizer = None
+
         export_policy_as_jit(
-            export_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt"
+            policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt"
         )
         export_policy_as_onnx(
-            export_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx"
+            policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx"
         )
-    except (ValueError, AttributeError) as e:
-        print(f"[WARNING] Could not export policy: {e}. Skipping export and continuing playback.")
 
     dt = env.unwrapped.step_dt
 
@@ -296,7 +242,9 @@ def main(
             # env stepping
             obs, _, dones, _ = env.step(actions)
             # reset recurrent states for episodes that have terminated
-            if hasattr(policy_nn, "reset"):
+            if version.parse(installed_version) >= version.parse("4.0.0"):
+                policy.reset(dones)
+            elif hasattr(policy_nn, "reset"):
                 policy_nn.reset(dones)
         if args_cli.video:
             timestep += 1
