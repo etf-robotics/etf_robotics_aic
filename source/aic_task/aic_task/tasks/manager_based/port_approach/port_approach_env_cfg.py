@@ -32,13 +32,19 @@ from aic_task.envs.aic_task_env_cfg import (
 TARGET_NAME = "nic_card"
 
 # Robot point of interest: cable tip expressed from gripper_tcp.
-CABLE_TIP_OFFSET_FROM_TCP = (0.0, 0.05402, -0.0185)
-CABLE_TIP_RPY_FROM_TCP = (math.radians(90.0), 0.0, math.radians(-73.0))
+#CABLE_TIP_OFFSET_FROM_TCP = (0.0, 0.05402, -0.0185)
+CABLE_TIP_OFFSET_FROM_TCP = (0.0, -0.0185, 0.05402)
+CABLE_TIP_RPY_FROM_TCP = (math.radians(29.0), 0.0, 0.0)
 
 # Port entry expressed in the nic_card frame, with an extra -7 cm approach offset along local Y.
 NIC_PORT_ENTRY_OFFSET = (-0.01025, -0.07725, 0.01035)
-NIC_PORT_APPROACH_OFFSET = (-0.01025, -0.14725, 0.01035)
-NIC_PORT_APPROACH_RPY = (0.0, 0.0, 0.0)
+NIC_PORT_APPROACH_OFFSET = (-0.01025, -0.12725, 0.01035)
+#NIC_PORT_APPROACH_OFFSET = (-0.07, -0.1, 0.01035)
+# Target frame convention from the Isaac viewport axes: cable-tip +Z is the
+# insertion axis. The approach point is farther along nic_card -Y than the port
+# entry, so insertion from approach into the connector is nic_card +Y. The
+# 180-degree pitch keeps +Z on +Y while flipping the plug keying.
+NIC_PORT_APPROACH_RPY = (math.radians(-90.0), math.radians(180.0), 0.0)
 
 
 @configclass
@@ -125,8 +131,8 @@ class PortApproachTerminationsCfg(TerminationsCfg):
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="gripper_tcp"),
             "target_cfg": SceneEntityCfg(TARGET_NAME),
-            "position_threshold": 0.08,
-            "orientation_threshold": 10.0,
+            "position_threshold": 0.01,
+            "orientation_threshold": 0.01,
             "asset_point_offset": CABLE_TIP_OFFSET_FROM_TCP,
             "target_point_offset": NIC_PORT_APPROACH_OFFSET,
             "asset_point_rpy": CABLE_TIP_RPY_FROM_TCP,
