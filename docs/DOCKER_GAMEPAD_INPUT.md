@@ -4,7 +4,7 @@ These notes describe the changes made to `docker/docker-compose.yaml` so Isaac S
 
 ## Changes
 
-### Bind the full input device tree
+### Bind the full input device tree as an optional host path
 
 Changed the device mapping from only:
 
@@ -15,10 +15,17 @@ Changed the device mapping from only:
 to:
 
 ```yaml
-- /dev/input:/dev/input
+- type: bind
+  source: /dev/input
+  target: /dev/input
 ```
 
 Reason: Linux exposes gamepads through both legacy joystick nodes such as `js0` and event nodes such as `event*`. Omniverse/Carb input discovery often needs the `event*` devices, not only `js0`.
+
+Using a normal bind mount instead of a Compose `devices:` entry also lets the
+container start when no joystick is plugged in and `/dev/input` is missing on
+the host. The `device_cgroup_rules` entry below grants access to Linux input
+character devices when they are present.
 
 ### Bind udev metadata
 
@@ -42,7 +49,7 @@ device_cgroup_rules:
   - "c 13:* rmw"
 ```
 
-Reason: Linux input devices use character device major number `13`. This cgroup rule allows the container to read/write/mknod those input devices exposed under `/dev/input`.
+Reason: Linux input devices use character device major number `13`. This cgroup rule allows the container to read/write/mknod those input devices exposed under `/dev/input`, regardless of whether the joystick becomes `js0`, `js1`, or another input event node.
 
 ## After Changing Compose
 
@@ -60,4 +67,3 @@ Inside the container, verify that `event*` devices and udev metadata are visible
 ls -l /dev/input
 ls -l /run/udev
 ```
-
