@@ -667,8 +667,8 @@ class AICTaskEnvCfg(ManagerBasedRLEnvCfg):
                     sim_device=self.sim.device,
                 ),
                 "gamepad": Se3GamepadCfg(
-                    pos_sensitivity=0.3,
-                    rot_sensitivity=0.35,
+                    pos_sensitivity=0.5,
+                    rot_sensitivity=0.9,
                     dead_zone=0.12,
                     gripper_term=False,
                     sim_device=self.sim.device,
