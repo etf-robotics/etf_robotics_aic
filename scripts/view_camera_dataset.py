@@ -30,6 +30,18 @@ parser.add_argument("--fps", type=float, default=30.0, help="Playback/export FPS
 parser.add_argument("--start", type=int, default=0, help="First frame index.")
 parser.add_argument("--max_frames", type=int, default=0, help="Maximum number of frames. 0 = all.")
 parser.add_argument("--stride", type=int, default=1, help="Read every N-th frame.")
+parser.add_argument(
+    "--draw_keypoints",
+    action="store_true",
+    default=False,
+    help="Overlay visual port keypoints if present.",
+)
+parser.add_argument(
+    "--visible_only",
+    action="store_true",
+    default=False,
+    help="Draw only keypoints marked visible. By default in-frame occluded points are dimmed.",
+)
 args = parser.parse_args()
 
 
@@ -67,8 +79,9 @@ def _print_info(file: h5py.File) -> None:
                 dataset = camera_group["rgb"]
                 print(f"  obs/{camera_name}/rgb: shape={dataset.shape}, dtype={dataset.dtype}")
         if "actions" in demo_group:
-            dataset = demo_group["actions"]
-            print(f"  actions: shape={dataset.shape}, dtype={dataset.dtype}")
+            _print_dataset_tree(demo_group["actions"], "  actions")
+        if "labels" in demo_group:
+            _print_dataset_tree(demo_group["labels"], "  labels")
 
 
 def _decode_attr(value):
@@ -78,6 +91,14 @@ def _decode_attr(value):
         return json.loads(value)
     except Exception:
         return value
+
+
+def _print_dataset_tree(node: h5py.Group | h5py.Dataset, prefix: str) -> None:
+    if isinstance(node, h5py.Dataset):
+        print(f"{prefix}: shape={node.shape}, dtype={node.dtype}")
+        return
+    for name, child in node.items():
+        _print_dataset_tree(child, f"{prefix}/{name}")
 
 
 def _write_ppm(file_path: str, rgb: np.ndarray) -> None:
@@ -90,8 +111,61 @@ def _write_ppm(file_path: str, rgb: np.ndarray) -> None:
 
 
 def _make_mosaic(demo_group: h5py.Group, camera_names: list[str], frame_index: int) -> np.ndarray:
-    frames = [demo_group["obs"][camera_name]["rgb"][frame_index] for camera_name in camera_names]
+    frames = []
+    for camera_name in camera_names:
+        frame = demo_group["obs"][camera_name]["rgb"][frame_index]
+        if args.draw_keypoints:
+            frame = _draw_keypoints(demo_group, camera_name, frame_index, frame)
+        frames.append(frame)
     return np.concatenate(frames, axis=1)
+
+
+def _draw_keypoints(demo_group: h5py.Group, camera_name: str, frame_index: int, frame: np.ndarray) -> np.ndarray:
+    labels_path = f"labels/{camera_name}"
+    if labels_path not in demo_group:
+        return frame
+    camera_labels = demo_group[labels_path]
+    if "keypoints_uv" not in camera_labels:
+        return frame
+
+    output = frame.copy()
+    uv = camera_labels["keypoints_uv"][frame_index]
+    visible = camera_labels.get("keypoints_visible")
+    in_frame = camera_labels.get("keypoints_in_frame")
+    visible_values = visible[frame_index] if visible is not None else np.ones(uv.shape[0], dtype=bool)
+    in_frame_values = in_frame[frame_index] if in_frame is not None else np.ones(uv.shape[0], dtype=bool)
+
+    colors = np.array(
+        [
+            [255, 64, 64],
+            [64, 255, 64],
+            [64, 128, 255],
+            [255, 220, 64],
+            [255, 64, 220],
+            [64, 255, 220],
+        ],
+        dtype=np.uint8,
+    )
+    for idx, point_uv in enumerate(uv):
+        if args.visible_only and not visible_values[idx]:
+            continue
+        if not in_frame_values[idx]:
+            continue
+        color = colors[idx % len(colors)].copy()
+        if not visible_values[idx]:
+            color = (color // 3).astype(np.uint8)
+        _draw_cross(output, int(round(point_uv[0])), int(round(point_uv[1])), color)
+    return output
+
+
+def _draw_cross(frame: np.ndarray, x: int, y: int, color: np.ndarray, radius: int = 3) -> None:
+    height, width = frame.shape[:2]
+    if x < 0 or x >= width or y < 0 or y >= height:
+        return
+    x0, x1 = max(0, x - radius), min(width, x + radius + 1)
+    y0, y1 = max(0, y - radius), min(height, y + radius + 1)
+    frame[y, x0:x1] = color
+    frame[y0:y1, x] = color
 
 
 def _get_frame_indices(num_frames: int) -> range:
