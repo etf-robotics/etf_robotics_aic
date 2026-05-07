@@ -8,6 +8,7 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import os
 import sys
 
 from isaaclab.app import AppLauncher
@@ -62,8 +63,8 @@ cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
 args_cli, hydra_args = parser.parse_known_args()
-# always enable cameras to record video
-if args_cli.video:
+# always enable cameras to record video or the default browser camera stream
+if args_cli.video or os.environ.get("AIC_CAMERA_STREAM", "1").strip().lower() not in {"0", "false", "no", "off"}:
     args_cli.enable_cameras = True
 
 # clear out sys.argv for Hydra
@@ -76,7 +77,6 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 
 import importlib.metadata as metadata
-import os
 import time
 
 import gymnasium as gym
@@ -108,6 +108,7 @@ from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import aic_task.tasks  # noqa: F401
+from aic_task.utils.live_camera_stream import attach_default_camera_stream
 
 installed_version = metadata.version("rsl-rl-lib")
 
@@ -181,6 +182,8 @@ def main(
         print("[INFO] Recording videos during training.")
         print_dict(video_kwargs, nesting=4)
         env = gym.wrappers.RecordVideo(env, **video_kwargs)
+
+    attach_default_camera_stream(env)
 
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)

@@ -8,6 +8,7 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import os
 from collections.abc import Callable
 
 from isaaclab.app import AppLauncher
@@ -49,6 +50,11 @@ if args_cli.enable_pinocchio:
     import pinocchio  # noqa: F401
 if "handtracking" in args_cli.teleop_device.lower():
     app_launcher_args["xr"] = True
+if (
+    os.environ.get("AIC_CAMERA_STREAM", "1").strip().lower() not in {"0", "false", "no", "off"}
+    and not app_launcher_args.get("xr", False)
+):
+    app_launcher_args["enable_cameras"] = True
 
 app_launcher = AppLauncher(app_launcher_args)
 simulation_app = app_launcher.app
@@ -78,6 +84,7 @@ from isaaclab_tasks.manager_based.manipulation.lift import mdp
 from isaaclab_tasks.utils import parse_env_cfg
 
 import aic_task.tasks  # noqa: F401
+from aic_task.utils.live_camera_stream import attach_default_camera_stream
 
 if args_cli.enable_pinocchio:
     import isaaclab_tasks.manager_based.locomanipulation.pick_place  # noqa: F401
@@ -112,6 +119,8 @@ def main() -> None:
 
     try:
         env = gym.make(args_cli.task, cfg=env_cfg).unwrapped
+        if not args_cli.xr:
+            attach_default_camera_stream(env)
         if "Reach" in args_cli.task:
             logger.warning(
                 f"The environment '{args_cli.task}' does not support gripper control. The device command will be"

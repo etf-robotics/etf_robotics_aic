@@ -13,6 +13,7 @@ recorded action/state pairs compatible with teleop demonstrations.
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import os
 
 from isaaclab.app import AppLauncher
 
@@ -67,6 +68,8 @@ parser.add_argument(
 
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
+if os.environ.get("AIC_CAMERA_STREAM", "1").strip().lower() not in {"0", "false", "no", "off"}:
+    args_cli.enable_cameras = True
 
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
@@ -75,7 +78,6 @@ simulation_app = app_launcher.app
 
 import contextlib
 import math
-import os
 import time
 
 import gymnasium as gym
@@ -89,6 +91,7 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
 import aic_task.tasks  # noqa: F401
+from aic_task.utils.live_camera_stream import attach_default_camera_stream
 from aic_task.tasks.manager_based.port_approach.port_approach_env_cfg import (
     CABLE_TIP_OFFSET_FROM_TCP,
     CABLE_TIP_RPY_FROM_TCP,
@@ -226,6 +229,7 @@ def main() -> None:
     env_cfg.recorders.dataset_export_mode = DatasetExportMode.EXPORT_SUCCEEDED_ONLY
 
     env = gym.make(args_cli.task, cfg=env_cfg).unwrapped
+    attach_default_camera_stream(env)
     action_dim = env.action_space.shape[-1]
     action_scale = _get_action_scale(env, action_dim)
     rate_limiter = RateLimiter(args_cli.step_hz)

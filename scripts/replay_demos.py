@@ -20,6 +20,7 @@ optional arguments:
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import os
 
 from isaaclab.app import AppLauncher
 
@@ -66,6 +67,8 @@ parser.add_argument(
 
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
+if os.environ.get("AIC_CAMERA_STREAM", "1").strip().lower() not in {"0", "false", "no", "off"}:
+    args_cli.enable_cameras = True
 
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
@@ -73,7 +76,6 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 
 import contextlib
-import os
 
 import gymnasium as gym
 import torch
@@ -85,6 +87,7 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
 import aic_task.tasks  # noqa: F401
+from aic_task.utils.live_camera_stream import attach_default_camera_stream
 
 is_paused = False
 
@@ -181,6 +184,7 @@ def main():
     env_cfg.terminations = {}
 
     env = gym.make(args_cli.task or env_name, cfg=env_cfg).unwrapped
+    attach_default_camera_stream(env)
 
     teleop_interface = Se3Keyboard(
         Se3KeyboardCfg(pos_sensitivity=0.1, rot_sensitivity=0.1)

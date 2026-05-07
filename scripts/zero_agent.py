@@ -8,6 +8,7 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import os
 
 from isaaclab.app import AppLauncher
 
@@ -27,6 +28,8 @@ parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
 args_cli = parser.parse_args()
+if os.environ.get("AIC_CAMERA_STREAM", "1").strip().lower() not in {"0", "false", "no", "off"}:
+    args_cli.enable_cameras = True
 
 # launch omniverse app
 app_launcher = AppLauncher(args_cli)
@@ -42,6 +45,7 @@ import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import parse_env_cfg
 
 import aic_task.tasks  # noqa: F401
+from aic_task.utils.live_camera_stream import attach_default_camera_stream
 
 
 def main():
@@ -55,6 +59,7 @@ def main():
     )
     # create environment
     env = gym.make(args_cli.task, cfg=env_cfg)
+    attach_default_camera_stream(env)
 
     # print info (this is vectorized environment)
     print(f"[INFO]: Gym observation space: {env.observation_space}")
