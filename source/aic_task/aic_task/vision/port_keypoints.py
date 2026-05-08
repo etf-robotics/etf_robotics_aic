@@ -18,6 +18,10 @@ from aic_task.tasks.manager_based.port_approach.port_approach_env_cfg import (
     NIC_PORT_ENTRY_OFFSET,
 )
 
+DEFAULT_MOUTH_HALF_WIDTH = 0.007
+DEFAULT_MOUTH_HALF_HEIGHT = 0.0045
+DEFAULT_AXIS_LENGTH = 0.012
+
 
 @dataclass(frozen=True)
 class PortKeypointLayout:
@@ -40,9 +44,9 @@ def make_default_port_keypoint_layout(
     entry_offset: tuple[float, float, float] | None = None,
     approach_offset: tuple[float, float, float] | None = None,
     keypoint_offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
-    mouth_half_width: float = 0.012,
-    mouth_half_height: float = 0.006,
-    axis_length: float = 0.025,
+    mouth_half_width: float = DEFAULT_MOUTH_HALF_WIDTH,
+    mouth_half_height: float = DEFAULT_MOUTH_HALF_HEIGHT,
+    axis_length: float = DEFAULT_AXIS_LENGTH,
 ) -> PortKeypointLayout:
     """Create the default semantic keypoint layout for the NIC port.
 

@@ -56,14 +56,14 @@ parser.add_argument(
     default=0.015,
     help="Depth mismatch allowed for strict visible labels.",
 )
-parser.add_argument("--mouth_half_width", type=float, default=0.012, help="Half width of the port mouth keypoint box.")
+parser.add_argument("--mouth_half_width", type=float, default=None, help="Half width of the port mouth keypoint box.")
 parser.add_argument(
     "--mouth_half_height",
     type=float,
-    default=0.006,
+    default=None,
     help="Half height of the port mouth keypoint box.",
 )
-parser.add_argument("--axis_length", type=float, default=0.025, help="Length of local axis helper keypoints.")
+parser.add_argument("--axis_length", type=float, default=None, help="Length of local axis helper keypoints.")
 parser.add_argument(
     "--keypoint_offset",
     type=float,
@@ -134,7 +134,14 @@ from aic_task.controllers import (
     compute_port_approach_oracle,
     get_action_scale,
 )
-from aic_task.vision import compute_port_keypoint_labels, labels_for_env, make_default_port_keypoint_layout
+from aic_task.vision import (
+    DEFAULT_AXIS_LENGTH,
+    DEFAULT_MOUTH_HALF_HEIGHT,
+    DEFAULT_MOUTH_HALF_WIDTH,
+    compute_port_keypoint_labels,
+    labels_for_env,
+    make_default_port_keypoint_layout,
+)
 from aic_task.vision.dataset_writer import PortKeypointDatasetWriter
 
 
@@ -172,6 +179,8 @@ def main() -> None:
         use_fabric=True,
     )
     env_cfg.env_name = args_cli.task.split(":")[-1]
+    if hasattr(env_cfg.terminations, "success"):
+        env_cfg.terminations.success = None
     env_cfg.observations.policy.concatenate_terms = False
     _configure_camera_data_types(env_cfg, args_cli.camera_names, enable_depth=args_cli.enable_depth_labels)
 
@@ -187,9 +196,9 @@ def main() -> None:
         entry_offset=_optional_tuple(args_cli.entry_offset),
         approach_offset=_optional_tuple(args_cli.approach_offset),
         keypoint_offset=tuple(args_cli.keypoint_offset),
-        mouth_half_width=args_cli.mouth_half_width,
-        mouth_half_height=args_cli.mouth_half_height,
-        axis_length=args_cli.axis_length,
+        mouth_half_width=_default_if_none(args_cli.mouth_half_width, DEFAULT_MOUTH_HALF_WIDTH),
+        mouth_half_height=_default_if_none(args_cli.mouth_half_height, DEFAULT_MOUTH_HALF_HEIGHT),
+        axis_length=_default_if_none(args_cli.axis_length, DEFAULT_AXIS_LENGTH),
     )
     action_scale = get_action_scale(env, env.action_space.shape[-1])
     writer = PortKeypointDatasetWriter(
@@ -385,6 +394,10 @@ def _optional_tuple(values: list[float] | None) -> tuple[float, float, float] | 
     if values is None:
         return None
     return (float(values[0]), float(values[1]), float(values[2]))
+
+
+def _default_if_none(value: float | None, default: float) -> float:
+    return default if value is None else float(value)
 
 
 def _oracle_to_record(oracle, env_index: int) -> dict[str, torch.Tensor]:

@@ -33,12 +33,12 @@ TARGET_NAME = "nic_card"
 
 # Robot point of interest: cable tip expressed from gripper_tcp.
 #CABLE_TIP_OFFSET_FROM_TCP = (0.0, 0.05402, -0.0185)
-CABLE_TIP_OFFSET_FROM_TCP = (0.0, -0.01346, 0.0435)
-CABLE_TIP_RPY_FROM_TCP = (math.radians(17.2), 0.0, 0.0)
+CABLE_TIP_OFFSET_FROM_TCP = (0.0, -0.01338, 0.0435)
+CABLE_TIP_RPY_FROM_TCP = (math.radians(17.1), 0.0, 0.0)
 
 # Port entry expressed in the nic_card frame, with an extra -7 cm approach offset along local Y.
-NIC_PORT_ENTRY_OFFSET = (-0.014, -0.08, 0.007)
-NIC_PORT_APPROACH_OFFSET = (-0.014, -0.09, 0.007)
+NIC_PORT_ENTRY_OFFSET = (-0.01025, -0.07725, 0.00712)
+NIC_PORT_APPROACH_OFFSET = (-0.014, -0.088, 0.00712)
 #NIC_PORT_APPROACH_OFFSET = (-0.07, -0.1, 0.01035)
 # Target frame convention from the Isaac viewport axes: cable-tip +Z is the
 # insertion axis. The approach point is farther along nic_card -Y than the port
