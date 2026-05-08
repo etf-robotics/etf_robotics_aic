@@ -46,6 +46,7 @@ class PortKeypointDatasetWriter:
                 "camera_names": self.camera_names,
                 "keypoint_names": self.keypoint_names,
                 "phase_names": {str(key): value for key, value in phase_names.items()},
+                "camera_pose_source": "robot_body_optical",
             }
         )
         self._episode_group: h5py.Group | None = None
@@ -133,12 +134,7 @@ class PortKeypointDatasetWriter:
             self._append_array(f"labels/{camera_name}/points_camera", camera_labels["points_camera"], dtype=np.float32)
             self._append_array(f"camera/{camera_name}/intrinsic", camera_labels["intrinsic"], dtype=np.float32)
             self._append_array(f"camera/{camera_name}/pos_w", camera_labels["pos_w"], dtype=np.float32)
-            self._append_array(f"camera/{camera_name}/quat_w_ros", camera_labels["quat_w_ros"], dtype=np.float32)
-            self._append_array(
-                f"camera/{camera_name}/quat_w_projection",
-                camera_labels["quat_w_projection"],
-                dtype=np.float32,
-            )
+            self._append_array(f"camera/{camera_name}/quat_w", camera_labels["quat_w"], dtype=np.float32)
 
     def _append_mapping(self, group_path: str, values: Mapping[str, np.ndarray | torch.Tensor | float]) -> None:
         for key, value in values.items():

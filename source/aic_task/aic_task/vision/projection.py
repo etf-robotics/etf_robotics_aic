@@ -19,12 +19,15 @@ def compute_port_keypoint_labels(
     target_name: str = "nic_card",
     min_depth: float = 0.01,
     occlusion_depth_tolerance: float = 0.015,
-    camera_frame: str = "ros",
 ) -> dict:
     """Compute projected port keypoint labels for all envs and requested cameras.
 
     The returned tensors keep the env batch dimension.  A dataset writer can then
     select one env index, while vectorized jobs can still reuse the same labels.
+    Camera poses are read from the robot articulation bodies named
+    ``<camera_name>_optical``.  For these eye-in-hand cameras, Isaac Lab's
+    camera sensor pose and the raw USD Xform pose can be stale/static while the
+    articulation body pose follows the robot.
     """
     points_w = compute_port_keypoints_w(env, layout, target_name=target_name)
     camera_labels = {}
@@ -32,8 +35,8 @@ def compute_port_keypoint_labels(
         camera = env.scene.sensors[camera_name]
         rgb = camera.data.output["rgb"]
         height, width = _image_height_width(rgb)
-        camera_quat_w = _camera_quat_w(camera, camera_frame)
-        points_camera = _world_to_camera_points(points_w, camera.data.pos_w, camera_quat_w)
+        camera_pos_w, camera_quat_w = _camera_body_pose_w(env, camera_name)
+        points_camera = _world_to_camera_points(points_w, camera_pos_w, camera_quat_w)
         projected = math_utils.project_points(points_camera, camera.data.intrinsic_matrices)
         projected = _ensure_projected_points_batched(projected)
         uv = projected[..., :2]
@@ -52,9 +55,8 @@ def compute_port_keypoint_labels(
             "in_frame": in_frame,
             "points_camera": points_camera,
             "intrinsic": camera.data.intrinsic_matrices,
-            "pos_w": camera.data.pos_w,
-            "quat_w_ros": camera.data.quat_w_ros,
-            "quat_w_projection": camera_quat_w,
+            "pos_w": camera_pos_w,
+            "quat_w": camera_quat_w,
         }
 
     return {
@@ -85,16 +87,6 @@ def _image_height_width(image: torch.Tensor) -> tuple[int, int]:
     return int(image.shape[0]), int(image.shape[1])
 
 
-def _camera_quat_w(camera, camera_frame: str) -> torch.Tensor:
-    if camera_frame == "ros":
-        return camera.data.quat_w_ros
-    if camera_frame == "opengl":
-        return camera.data.quat_w_opengl
-    if camera_frame == "world":
-        return camera.data.quat_w_world
-    raise ValueError(f"Unsupported camera_frame '{camera_frame}'. Expected ros, opengl, or world.")
-
-
 def labels_for_env(labels: Mapping, env_index: int) -> dict:
     """Slice a batched label dict down to one env index for serialization."""
     sliced_cameras = {}
@@ -112,15 +104,27 @@ def labels_for_env(labels: Mapping, env_index: int) -> dict:
 def _world_to_camera_points(
     points_w: torch.Tensor,
     camera_pos_w: torch.Tensor,
-    camera_quat_w_ros: torch.Tensor,
+    camera_quat_w: torch.Tensor,
 ) -> torch.Tensor:
     rel_points = points_w - camera_pos_w[:, None, :]
     num_envs, num_points, _ = rel_points.shape
-    quat_batched = camera_quat_w_ros[:, None, :].expand(-1, num_points, -1)
+    quat_batched = camera_quat_w[:, None, :].expand(-1, num_points, -1)
     return math_utils.quat_apply_inverse(
         quat_batched.reshape(-1, 4),
         rel_points.reshape(-1, 3),
     ).reshape(num_envs, num_points, 3)
+
+
+def _camera_body_pose_w(env, camera_name: str) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return camera optical body pose from the robot articulation state."""
+    robot = env.scene["robot"]
+    body_name = f"{camera_name}_optical"
+    body_ids = robot.find_bodies(body_name, preserve_order=True)[0]
+    if len(body_ids) == 0:
+        available = ", ".join(getattr(robot, "body_names", []))
+        raise KeyError(f"Camera body '{body_name}' not found. Available robot bodies: {available}")
+    body_id = body_ids[0]
+    return robot.data.body_pos_w[:, body_id, :], robot.data.body_quat_w[:, body_id, :]
 
 
 def _points_in_frame(

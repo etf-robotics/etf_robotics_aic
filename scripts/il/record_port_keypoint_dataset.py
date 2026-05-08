@@ -36,7 +36,7 @@ parser.add_argument(
     default=["left_camera", "center_camera", "right_camera"],
     help="Camera sensor names to record.",
 )
-parser.add_argument("--enable_depth_labels", action="store_true", default=True, help="Render distance labels too.")
+parser.set_defaults(enable_depth_labels=True)
 parser.add_argument("--no_depth_labels", action="store_false", dest="enable_depth_labels", help="Disable depth labels.")
 parser.add_argument(
     "--stream",
@@ -44,18 +44,11 @@ parser.add_argument(
     default=False,
     help="Attach the browser camera stream while recording.",
 )
-parser.add_argument("--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O.")
 parser.add_argument("--pos_gain", type=float, default=0.8, help="Oracle position gain.")
 parser.add_argument("--rot_gain", type=float, default=0.6, help="Oracle rotation gain.")
 parser.add_argument("--max_pos_delta", type=float, default=0.025, help="Max processed position delta.")
 parser.add_argument("--max_rot_delta", type=float, default=0.20, help="Max processed rotation delta.")
 parser.add_argument("--num_success_steps", type=int, default=12, help="Consecutive HOLD steps to mark success.")
-parser.add_argument(
-    "--camera_frame",
-    choices=["ros", "opengl", "world"],
-    default="ros",
-    help="Camera orientation convention used for keypoint projection.",
-)
 parser.add_argument("--min_depth", type=float, default=0.01, help="Minimum positive camera depth for in-frame labels.")
 parser.add_argument(
     "--occlusion_depth_tolerance",
@@ -96,12 +89,6 @@ parser.add_argument(
     help="Override approach_center in the NIC-card frame.",
 )
 parser.add_argument(
-    "--phase_mask_key",
-    choices=["in_frame", "visible"],
-    default="in_frame",
-    help="Keypoint mask used for teacher phase transitions.",
-)
-parser.add_argument(
     "--log_every",
     type=int,
     default=50,
@@ -112,6 +99,12 @@ parser.add_argument(
     action="store_true",
     default=False,
     help="Print per-camera projected UV/depth ranges in debug logs.",
+)
+parser.add_argument(
+    "--debug_keypoint",
+    type=str,
+    default="entry_center",
+    help="Named keypoint to print in detailed projection logs.",
 )
 
 AppLauncher.add_app_launcher_args(parser)
@@ -176,7 +169,7 @@ def main() -> None:
         args_cli.task,
         device=args_cli.device,
         num_envs=max(1, args_cli.env_index + 1),
-        use_fabric=not args_cli.disable_fabric,
+        use_fabric=True,
     )
     env_cfg.env_name = args_cli.task.split(":")[-1]
     env_cfg.observations.policy.concatenate_terms = False
@@ -212,6 +205,7 @@ def main() -> None:
 
     print(f"[INFO] Recording visual port keypoint dataset for {args_cli.task}")
     print(f"[INFO] Cameras: {', '.join(args_cli.camera_names)}")
+    print("[INFO] Camera poses: robot articulation bodies named <camera>_optical")
     print(f"[INFO] Saving to: {args_cli.dataset_file}")
     print(f"[INFO] Keypoints: {', '.join(layout.names)}")
 
@@ -258,7 +252,6 @@ def _record_episode(
             layout,
             min_depth=args_cli.min_depth,
             occlusion_depth_tolerance=args_cli.occlusion_depth_tolerance,
-            camera_frame=args_cli.camera_frame,
         )
         oracle = compute_port_approach_oracle(
             env,
@@ -274,7 +267,6 @@ def _record_episode(
             env_index=args_cli.env_index,
             position_error=float(oracle.position_error[args_cli.env_index]),
             orientation_error=float(oracle.orientation_error[args_cli.env_index]),
-            phase_mask_key=args_cli.phase_mask_key,
         )
         action = apply_phase_gate(oracle.raw_action, phase, env_index=args_cli.env_index)
         if env.num_envs > 1:
@@ -301,7 +293,7 @@ def _record_episode(
                 f"action_norm={float(torch.linalg.norm(action[args_cli.env_index])):.4f}"
             )
             if args_cli.log_projection_details:
-                print(_projection_debug_line(labels, args_cli.env_index))
+                print(_projection_debug_line(labels, args_cli.env_index, args_cli.debug_keypoint))
 
         env.step(action)
         if phase == TeacherPhase.HOLD:
@@ -359,18 +351,32 @@ def _keypoint_count(labels: dict, env_index: int, mask_key: str) -> int:
     )
 
 
-def _projection_debug_line(labels: dict, env_index: int) -> str:
+def _projection_debug_line(labels: dict, env_index: int, debug_keypoint: str) -> str:
+    keypoint_names = labels["keypoint_names"]
+    if debug_keypoint not in keypoint_names:
+        debug_keypoint = keypoint_names[0]
+    keypoint_index = keypoint_names.index(debug_keypoint)
     camera_parts = []
     for camera_name, camera_labels in labels["cameras"].items():
         uv = camera_labels["uv"][env_index]
         depth = camera_labels["depth"][env_index]
+        keypoint_uv = uv[keypoint_index]
+        keypoint_depth = depth[keypoint_index]
+        point_camera = camera_labels["points_camera"][env_index, keypoint_index]
+        keypoint_front = bool(keypoint_depth > args_cli.min_depth)
+        keypoint_in = bool(camera_labels["in_frame"][env_index, keypoint_index])
+        keypoint_visible = bool(camera_labels["visible"][env_index, keypoint_index])
         in_front = int((depth > args_cli.min_depth).sum().item())
         in_frame = int(camera_labels["in_frame"][env_index].sum().item())
         camera_parts.append(
             f"{camera_name}:front={in_front} in={in_frame} "
             f"u=[{float(uv[:, 0].min()):.1f},{float(uv[:, 0].max()):.1f}] "
             f"v=[{float(uv[:, 1].min()):.1f},{float(uv[:, 1].max()):.1f}] "
-            f"z=[{float(depth.min()):.3f},{float(depth.max()):.3f}]"
+            f"z=[{float(depth.min()):.3f},{float(depth.max()):.3f}] "
+            f"{debug_keypoint}:front={keypoint_front} in={keypoint_in} "
+            f"vis={keypoint_visible} uv=({float(keypoint_uv[0]):.1f},{float(keypoint_uv[1]):.1f}) "
+            f"z={float(keypoint_depth):.3f} "
+            f"p_cam=({float(point_camera[0]):.3f},{float(point_camera[1]):.3f},{float(point_camera[2]):.3f})"
         )
     return "[INFO] projection " + " | ".join(camera_parts)
 

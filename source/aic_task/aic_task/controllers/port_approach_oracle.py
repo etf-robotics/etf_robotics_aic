@@ -144,7 +144,6 @@ def choose_preapproach_phase(
     position_error: float,
     orientation_error: float,
     center_camera: str = "center_camera",
-    phase_mask_key: str = "in_frame",
     align_position_threshold: float = 0.04,
     position_hold_threshold: float = 0.025,
     orientation_hold_threshold: float = math.radians(15.0),
@@ -155,7 +154,7 @@ def choose_preapproach_phase(
     approach_idx = layout.index("approach_center")
     mouth_indices = [layout.index(name) for name in layout.names if name.startswith("mouth_")]
     camera_masks = {
-        camera_name: _camera_phase_mask(camera_labels, env_index, phase_mask_key)
+        camera_name: camera_labels["in_frame"][env_index]
         for camera_name, camera_labels in cameras.items()
     }
 
@@ -209,9 +208,3 @@ def _clamp_vector_norm(vector: torch.Tensor, max_norm: float) -> torch.Tensor:
     norm = torch.linalg.norm(vector, dim=1, keepdim=True)
     scale = torch.clamp(max_norm / torch.clamp(norm, min=1.0e-9), max=1.0)
     return vector * scale
-
-
-def _camera_phase_mask(camera_labels: dict, env_index: int, phase_mask_key: str) -> torch.Tensor:
-    if phase_mask_key in camera_labels:
-        return camera_labels[phase_mask_key][env_index]
-    return camera_labels["visible"][env_index]
