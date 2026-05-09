@@ -6,8 +6,7 @@
 """Record V1 visual-oracle SFP port insertion datasets.
 
 The recorder stores every episode, successful or not.  The scripted oracle uses
-ground-truth USD port frames, plug center/tip frames, projected keypoints, and a
-contact-sensor force gate during insertion.
+ground-truth USD port frames, plug center/tip frames, and projected keypoints.
 """
 
 """Launch Isaac Sim Simulator first."""
@@ -28,7 +27,7 @@ parser.add_argument("--num_episodes", type=int, default=10, help="Number of epis
 parser.add_argument("--max_episode_steps", type=int, default=900, help="Maximum control steps per episode.")
 parser.add_argument("--step_hz", type=int, default=30, help="Control/render loop rate.")
 parser.add_argument("--settle_seconds", type=float, default=1.0, help="Zero-action settling time before recording.")
-parser.add_argument("--save_every", type=int, default=1, help="Save every N-th control step.")
+parser.add_argument("--save_every", type=int, default=2, help="Save every N-th control step.")
 parser.add_argument("--env_index", type=int, default=0, help="Environment index to serialize.")
 parser.add_argument("--port_name", type=str, default="sfp_port_0", help="Port to target. V1 expects sfp_port_0.")
 parser.add_argument("--target_name", type=str, default="nic_card", help="Scene asset containing the port USD frames.")
@@ -106,9 +105,12 @@ parser.add_argument(
 )
 parser.add_argument("--target_roll_offset_deg", type=float, default=-13.0, help="Manual roll target offset about port insertion axis.")
 parser.add_argument("--center_enable_distance", type=float, default=0.060, help="Allow CENTER only this close to coarse target.")
-parser.add_argument("--rotation_enable_distance", type=float, default=0.060, help="Allow rotation alignment only this close to coarse target.")
+parser.add_argument("--rotation_enable_distance", type=float, default=0.2, help="Allow rotation alignment only this close to coarse target.")
 parser.add_argument("--align_lift", type=float, default=0.070, help="World-Z lift for ALIGN rotation before descending.")
-parser.add_argument("--num_success_steps", type=int, default=12, help="Consecutive SEAT steps to mark success.")
+parser.add_argument("--num_success_steps", type=int, default=12, help="Deprecated; success uses stationary gripper time.")
+parser.add_argument("--success_stationary_distance", type=float, default=0.01, help="Max gripper movement for success, in meters.")
+parser.add_argument("--success_stationary_seconds", type=float, default=2.5, help="Seconds gripper must stay within the success movement window.")
+parser.add_argument("--success_record_tail_seconds", type=float, default=1.0, help="Seconds of stationary success tail to keep in the dataset.")
 parser.add_argument("--backoff_steps", type=int, default=8, help="Steps to spend in BACKOFF after a force jam.")
 parser.add_argument("--jam_steps", type=int, default=3, help="Consecutive jammed INSERT steps before BACKOFF.")
 parser.add_argument("--force_contact_threshold", type=float, default=1.0, help="Contact-start threshold in Newtons.")
@@ -117,7 +119,7 @@ parser.add_argument("--force_axis_limit", type=float, default=10.0, help="Insert
 parser.add_argument("--min_depth", type=float, default=0.01, help="Minimum positive camera depth for labels.")
 parser.add_argument("--occlusion_depth_tolerance", type=float, default=0.015, help="Depth mismatch allowed for visibility.")
 parser.add_argument("--keypoint_offset", type=float, nargs=3, default=(0.0, 0.0, 0.0), metavar=("X", "Y", "Z"))
-parser.add_argument("--log_every", type=int, default=25, help="Print one recorder debug line every N steps. 0 disables.")
+parser.add_argument("--log_every", type=int, default=50, help="Print one recorder debug line every N steps. 0 disables.")
 parser.add_argument("--log_projection_details", action="store_true", default=False, help="Print per-camera projection details.")
 parser.add_argument("--debug_keypoint", type=str, default="entrance_center", help="Named keypoint for projection logs.")
 parser.set_defaults(print_body_names=True)
@@ -240,6 +242,8 @@ def main() -> None:
         phase_names={int(phase): phase.name for phase in InsertionTeacherPhase},
         step_hz=args_cli.step_hz,
         env_index=args_cli.env_index,
+        sample_stride=args_cli.save_every,
+        action_metadata=_action_metadata(env),
     )
     rate_limiter = RateLimiter(args_cli.step_hz)
 
@@ -248,6 +252,14 @@ def main() -> None:
     print(f"[INFO] Cameras: {', '.join(args_cli.camera_names)}")
     print(f"[INFO] Saving to: {args_cli.dataset_file}")
     print(f"[INFO] Keypoints: {', '.join(layout.names)}")
+    print(
+        f"[INFO] Success: {args_cli.tcp_body} stationary within "
+        f"{args_cli.success_stationary_distance:.3f}m for {args_cli.success_stationary_seconds:.1f}s"
+    )
+    print(
+        f"[INFO] Recording every {args_cli.save_every} step(s), keeping "
+        f"{args_cli.success_record_tail_seconds:.1f}s of stationary success tail"
+    )
     if args_cli.print_body_names:
         _print_body_debug(env)
 
@@ -287,7 +299,10 @@ def _record_episode(
 
     writer.start_episode()
     success = False
-    seat_step_count = 0
+    stationary_step_count = 0
+    stationary_anchor_w = None
+    required_stationary_steps = max(1, int(math.ceil(args_cli.success_stationary_seconds / _env_step_dt(env))))
+    record_stationary_steps = max(1, int(math.ceil(args_cli.success_record_tail_seconds / _env_step_dt(env))))
     jam_step_count = 0
     backoff_steps_remaining = 0
     printed_runtime_debug = False
@@ -330,7 +345,8 @@ def _record_episode(
             selected_action[args_cli.env_index] = action[args_cli.env_index]
             action = selected_action
 
-        if step % args_cli.save_every == 0:
+        should_record = step % args_cli.save_every == 0 and stationary_step_count < record_stationary_steps
+        if should_record:
             writer.append(
                 frames=_read_camera_frames(env, args_cli.camera_names, args_cli.env_index),
                 labels=labels_for_env(labels, args_cli.env_index),
@@ -338,6 +354,8 @@ def _record_episode(
                 action=action[args_cli.env_index],
                 phase=int(phase),
                 oracle=_oracle_to_record(oracle, args_cli.env_index),
+                action_info=_action_to_record(action, oracle, action_scale, args_cli.env_index),
+                command_info=_command_to_record(oracle, args_cli.env_index),
             )
 
         if not printed_runtime_debug:
@@ -357,11 +375,6 @@ def _record_episode(
                 f"axis_err={float(torch.rad2deg(oracle.axis_error[args_cli.env_index])):.1f}deg "
                 f"x_err={float(torch.rad2deg(oracle.x_axis_error[args_cli.env_index])):.1f}deg "
                 f"drot={float(torch.rad2deg(oracle.roll_delta[args_cli.env_index])):+.1f}deg "
-                f"force={float(oracle.force.force_norm[args_cli.env_index]):.2f}N "
-                f"lat={float(oracle.force.lateral_force[args_cli.env_index]):.2f}N "
-                f"axisF={float(oracle.force.axis_force[args_cli.env_index]):.2f}N "
-                f"contact={bool(oracle.force.contacting[args_cli.env_index])} "
-                f"jam={bool(oracle.force.jammed[args_cli.env_index])} "
                 f"action_norm={float(torch.linalg.norm(action[args_cli.env_index])):.4f}"
             )
             if args_cli.log_projection_details:
@@ -370,19 +383,28 @@ def _record_episode(
         tcp_before = _body_pos(env, args_cli.tcp_body, args_cli.env_index)
         plug_before = _body_pos(env, args_cli.plug_center_body, args_cli.env_index)
         env.step(action)
-        tcp_delta = torch.linalg.norm(_body_pos(env, args_cli.tcp_body, args_cli.env_index) - tcp_before)
-        plug_delta = torch.linalg.norm(_body_pos(env, args_cli.plug_center_body, args_cli.env_index) - plug_before)
+        tcp_after = _body_pos(env, args_cli.tcp_body, args_cli.env_index)
+        plug_after = _body_pos(env, args_cli.plug_center_body, args_cli.env_index)
+        tcp_delta = torch.linalg.norm(tcp_after - tcp_before)
+        plug_delta = torch.linalg.norm(plug_after - plug_before)
+        if stationary_anchor_w is None:
+            stationary_anchor_w = tcp_after.clone()
+            stationary_step_count = 1
+        elif torch.linalg.norm(tcp_after - stationary_anchor_w) > args_cli.success_stationary_distance:
+            stationary_anchor_w = tcp_after.clone()
+            stationary_step_count = 1
+        else:
+            stationary_step_count += 1
+
         if args_cli.log_every > 0 and step % args_cli.log_every == 0:
             print(
                 f"[INFO] motion step={step:04d} "
                 f"tcp_delta={float(tcp_delta):.6f} "
-                f"plug_delta={float(plug_delta):.6f}"
+                f"plug_delta={float(plug_delta):.6f} "
+                f"stable={stationary_step_count}/{required_stationary_steps} "
+                f"record_tail={min(stationary_step_count, record_stationary_steps)}/{record_stationary_steps}"
             )
-        if phase == InsertionTeacherPhase.SEAT:
-            seat_step_count += 1
-        else:
-            seat_step_count = 0
-        if seat_step_count >= args_cli.num_success_steps:
+        if stationary_step_count >= required_stationary_steps:
             success = True
             break
         if env.sim.is_stopped():
@@ -403,6 +425,34 @@ def _settle_episode(env: gym.Env, action: torch.Tensor, rate_limiter: RateLimite
         if env.sim.is_stopped():
             break
         rate_limiter.sleep(env)
+
+
+def _env_step_dt(env: gym.Env) -> float:
+    """Return simulated control-step duration for success timing."""
+    step_dt = getattr(env, "step_dt", None)
+    if step_dt is not None:
+        step_dt = float(step_dt)
+        if step_dt > 0.0:
+            return step_dt
+
+    return 1.0 / max(1, args_cli.step_hz)
+
+
+def _action_metadata(env: gym.Env) -> dict:
+    """Describe action datasets so training code can consume them without env-code guesses."""
+    return {
+        "target_dataset": "actions/env_action",
+        "physical_delta_dataset": "actions/processed_action",
+        "controller": "DifferentialInverseKinematicsActionCfg",
+        "command_type": "pose",
+        "use_relative_mode": True,
+        "raw_action_order": ["dx", "dy", "dz", "dax", "day", "daz"],
+        "processed_action_units": ["m", "m", "m", "rad", "rad", "rad"],
+        "processed_action_frame": "robot_base",
+        "step_dt": _env_step_dt(env),
+        "legacy_action_dataset": "actions/oracle",
+        "teacher_command_group": "commands",
+    }
 
 
 def _compute_oracle(
@@ -501,6 +551,26 @@ def _read_proprio(env: gym.Env, env_index: int) -> dict[str, torch.Tensor]:
     }
 
 
+def _action_to_record(action: torch.Tensor, oracle, action_scale: torch.Tensor, env_index: int) -> dict[str, torch.Tensor]:
+    applied_raw_action = action[env_index]
+    scale = action_scale[env_index]
+    return {
+        "processed_action": applied_raw_action * scale,
+        "action_scale": scale,
+        "oracle_raw_action_ungated": oracle.raw_action[env_index],
+        "oracle_processed_action_ungated": oracle.processed_action[env_index],
+    }
+
+
+def _command_to_record(oracle, env_index: int) -> dict[str, torch.Tensor]:
+    return {
+        "desired_tcp_pose_w": torch.cat((oracle.desired_tcp_pos_w[env_index], oracle.desired_tcp_quat_w[env_index])),
+        "desired_plug_center_pos_w": oracle.desired_plug_center_pos_w[env_index],
+        "desired_plug_axis_w": oracle.desired_plug_axis_w[env_index],
+        "desired_plug_x_axis_w": oracle.desired_plug_x_axis_w[env_index],
+    }
+
+
 def _oracle_to_record(oracle, env_index: int) -> dict[str, torch.Tensor]:
     return {
         "raw_action": oracle.raw_action[env_index],
@@ -527,12 +597,6 @@ def _oracle_to_record(oracle, env_index: int) -> dict[str, torch.Tensor]:
         "tcp_x_axis_w": oracle.tcp_x_axis_w[env_index],
         "tip_delta_port_frame": oracle.tip_delta_port_frame[env_index],
         "roll_delta": oracle.roll_delta[env_index],
-        "force_w": oracle.force.net_force_w[env_index],
-        "force_norm": oracle.force.force_norm[env_index],
-        "axis_force": oracle.force.axis_force[env_index],
-        "lateral_force": oracle.force.lateral_force[env_index],
-        "force_contacting": oracle.force.contacting[env_index].to(dtype=torch.float32),
-        "force_jammed": oracle.force.jammed[env_index].to(dtype=torch.float32),
         "tip_to_target": oracle.tip_to_target[env_index],
         "axis_error": oracle.axis_error[env_index],
         "x_axis_error": oracle.x_axis_error[env_index],
@@ -604,8 +668,7 @@ def _runtime_debug_line(oracle, env_index: int) -> str:
         f"insertion_axis={_vec3(oracle.insertion_axis_w[env_index])} "
         f"target_y={_vec3(oracle.desired_plug_x_axis_w[env_index])} "
         f"delta_port={_vec3(oracle.tip_delta_port_frame[env_index])} "
-        f"drot={float(torch.rad2deg(oracle.roll_delta[env_index])):+.2f}deg "
-        f"force={float(oracle.force.force_norm[env_index]):.3f}N"
+        f"drot={float(torch.rad2deg(oracle.roll_delta[env_index])):+.2f}deg"
     )
 
 

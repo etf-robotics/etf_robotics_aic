@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import torch
@@ -231,3 +232,68 @@ class PlugInsertedSuccess(ManagerTermBase):
         )
         self._success_counts = torch.where(inserted, self._success_counts + 1, torch.zeros_like(self._success_counts))
         return self._success_counts >= required_steps
+
+
+class GripperStationarySuccess(ManagerTermBase):
+    """Stateful success when a gripper body stays within a small position window."""
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._anchor_pos_w = torch.zeros((env.num_envs, 3), dtype=torch.float32, device=env.device)
+        self._stable_counts = torch.zeros(env.num_envs, dtype=torch.int32, device=env.device)
+        self._initialized = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+
+    def reset(self, env_ids=None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
+        self._anchor_pos_w[env_ids] = 0.0
+        self._stable_counts[env_ids] = 0
+        self._initialized[env_ids] = False
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        body_name: str = "gripper_tcp",
+        movement_threshold: float = 0.01,
+        required_seconds: float = 5.0,
+    ) -> torch.Tensor:
+        robot: Articulation = env.scene[asset_cfg.name]
+        body_id = _first_body_id(robot, asset_cfg, body_name)
+        body_pos_w = robot.data.body_pos_w[:, body_id, :]
+
+        if self._anchor_pos_w.dtype != body_pos_w.dtype or self._anchor_pos_w.device != body_pos_w.device:
+            self._anchor_pos_w = self._anchor_pos_w.to(dtype=body_pos_w.dtype, device=body_pos_w.device)
+
+        uninitialized = ~self._initialized
+        self._anchor_pos_w = torch.where(uninitialized.unsqueeze(1), body_pos_w, self._anchor_pos_w)
+        self._initialized = torch.ones_like(self._initialized)
+
+        moved_too_far = torch.linalg.norm(body_pos_w - self._anchor_pos_w, dim=1) > movement_threshold
+        self._anchor_pos_w = torch.where(moved_too_far.unsqueeze(1), body_pos_w, self._anchor_pos_w)
+
+        one_step = torch.ones_like(self._stable_counts)
+        self._stable_counts = torch.where(moved_too_far, one_step, self._stable_counts + 1)
+
+        required_steps = max(1, int(math.ceil(required_seconds / _env_step_dt(env))))
+        return self._stable_counts >= required_steps
+
+
+def _env_step_dt(env: ManagerBasedRLEnv) -> float:
+    """Return manager step time in seconds, with config fallback for tests."""
+    step_dt = getattr(env, "step_dt", None)
+    if step_dt is not None:
+        step_dt = float(step_dt)
+        if step_dt > 0.0:
+            return step_dt
+
+    cfg = getattr(env, "cfg", None)
+    sim_cfg = getattr(cfg, "sim", None)
+    sim_dt = getattr(sim_cfg, "dt", None)
+    decimation = getattr(cfg, "decimation", None)
+    if sim_dt is not None and decimation is not None:
+        step_dt = float(sim_dt) * float(decimation)
+        if step_dt > 0.0:
+            return step_dt
+
+    return 1.0

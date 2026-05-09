@@ -5,14 +5,11 @@
 
 """V1 port insertion task configuration.
 
-This task keeps the shared AIC scene, enables contact reporting on the robot,
-and terminates only when the plug tip reaches the USD-resolved seat frame for
-``sfp_port_0`` with the plug axis aligned to the insertion axis.
+This task keeps the shared AIC scene and marks success when the gripper has
+stayed still for a short window.
 """
 
 from __future__ import annotations
-
-import math
 
 import aic_task.mdp as mdp
 from isaaclab.managers import RewardTermCfg as RewTerm
@@ -37,11 +34,7 @@ PLUG_TIP_BODY = "sfp_tip_link"
 
 @configclass
 class PortInsertionSceneCfg(AICTaskSceneCfg):
-    """AIC scene for insertion.
-
-    Force sensing is intentionally disabled in V1 smoke runs.  The oracle and
-    rewards tolerate a missing ``plug_contact_forces`` sensor and report zeros.
-    """
+    """AIC scene for insertion without contact-force recording."""
 
     plug_contact_forces = None
 
@@ -76,31 +69,17 @@ class PortInsertionRewardsCfg(RewardsCfg):
             "port_name": PORT_NAME,
         },
     )
-    force_penalty = RewTerm(
-        func=mdp.plug_contact_force_norm,
-        weight=-0.01,
-        params={
-            "sensor_name": "plug_contact_forces",
-            "body_regex": ".*sfp.*|.*plug.*|.*tip.*",
-        },
-    )
-
 
 @configclass
 class PortInsertionTerminationsCfg(TerminationsCfg):
-    """Insertion success is seated, not merely above the port."""
+    """Insertion success is a stable gripper for 2.5 seconds."""
 
     success = DoneTerm(
-        func=mdp.PlugInsertedSuccess,
+        func=mdp.GripperStationarySuccess,
         params={
-            "asset_cfg": SceneEntityCfg("robot"),
-            "target_cfg": SceneEntityCfg(TARGET_NAME),
-            "plug_center_body": PLUG_CENTER_BODY,
-            "plug_tip_body": PLUG_TIP_BODY,
-            "port_name": PORT_NAME,
-            "position_threshold": 0.004,
-            "axis_threshold": math.radians(8.0),
-            "required_steps": 5,
+            "asset_cfg": SceneEntityCfg("robot", body_names="gripper_tcp"),
+            "movement_threshold": 0.01,
+            "required_seconds": 2.5,
         },
     )
 
@@ -131,3 +110,8 @@ class PortInsertionEnvCfg(AICTaskEnvCfg):
 
         self.episode_length_s = 120.0
         self.actions.arm_action.scale = 0.035
+
+        arm_actuator = self.scene.robot.actuators["arm"]
+        arm_actuator.effort_limit_sim = 110.0
+        arm_actuator.stiffness = 2600.0
+        arm_actuator.damping = 130.0

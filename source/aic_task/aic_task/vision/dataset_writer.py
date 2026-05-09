@@ -24,12 +24,16 @@ class PortKeypointDatasetWriter:
         phase_names: Mapping[int, str],
         step_hz: int,
         env_index: int,
+        sample_stride: int = 1,
+        action_metadata: Mapping | None = None,
     ):
         self.file_path = file_path
         self.camera_names = list(camera_names)
         self.keypoint_names = list(keypoint_names)
         self.step_hz = step_hz
         self.env_index = env_index
+        self.sample_stride = sample_stride
+        self.action_metadata = dict(action_metadata or {})
         self.episode_count = 0
         self.sample_count = 0
 
@@ -47,6 +51,8 @@ class PortKeypointDatasetWriter:
                 "keypoint_names": self.keypoint_names,
                 "phase_names": {str(key): value for key, value in phase_names.items()},
                 "camera_pose_source": "robot_body_optical",
+                "sample_stride": self.sample_stride,
+                "action_metadata": self.action_metadata,
             }
         )
         self._episode_group: h5py.Group | None = None
@@ -61,12 +67,14 @@ class PortKeypointDatasetWriter:
         self._episode_group = self._data_group.create_group(episode_name)
         self._episode_group.attrs["step_hz"] = self.step_hz
         self._episode_group.attrs["env_index"] = self.env_index
+        self._episode_group.attrs["sample_stride"] = self.sample_stride
         self._episode_group.attrs["camera_names"] = json.dumps(self.camera_names)
         self._episode_group.attrs["keypoint_names"] = json.dumps(self.keypoint_names)
         self._episode_group.create_group("obs")
         self._episode_group.create_group("labels")
         self._episode_group.create_group("proprio")
-        self._episode_group.create_group("actions")
+        actions_group = self._episode_group.create_group("actions")
+        actions_group.attrs["metadata"] = json.dumps(self.action_metadata)
         self._episode_group.create_group("camera")
         self._datasets = {}
         self._episode_sample_count = 0
@@ -80,6 +88,8 @@ class PortKeypointDatasetWriter:
         action: np.ndarray | torch.Tensor,
         phase: int,
         oracle: Mapping[str, np.ndarray | torch.Tensor | float],
+        action_info: Mapping[str, np.ndarray | torch.Tensor | float] | None = None,
+        command_info: Mapping[str, np.ndarray | torch.Tensor | float] | None = None,
     ) -> None:
         """Append one sample to the open episode."""
         if self._episode_group is None:
@@ -89,6 +99,11 @@ class PortKeypointDatasetWriter:
         self._append_labels(labels)
         self._append_mapping("proprio", proprio)
         self._append_array("actions/oracle", action, dtype=np.float32)
+        self._append_array("actions/env_action", action, dtype=np.float32)
+        if action_info is not None:
+            self._append_mapping("actions", action_info)
+        if command_info is not None:
+            self._append_mapping("commands", command_info)
         self._append_scalar("labels/phase", phase, dtype=np.int32)
         self._append_mapping("labels/oracle", oracle)
 
