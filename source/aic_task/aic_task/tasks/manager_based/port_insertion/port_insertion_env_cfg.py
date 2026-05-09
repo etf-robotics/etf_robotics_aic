@@ -18,7 +18,6 @@ import aic_task.mdp as mdp
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
-from isaaclab.sensors import ContactSensorCfg
 from isaaclab.utils import configclass
 
 from aic_task.envs.aic_task_env_cfg import (
@@ -38,18 +37,13 @@ PLUG_TIP_BODY = "sfp_tip_link"
 
 @configclass
 class PortInsertionSceneCfg(AICTaskSceneCfg):
-    """AIC scene with robot contact sensors enabled for insertion."""
+    """AIC scene for insertion.
 
-    plug_contact_forces = ContactSensorCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/aic_unified_robot/.*",
-        update_period=0.0,
-        history_length=5,
-        debug_vis=False,
-    )
+    Force sensing is intentionally disabled in V1 smoke runs.  The oracle and
+    rewards tolerate a missing ``plug_contact_forces`` sensor and report zeros.
+    """
 
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        self.robot.spawn.activate_contact_sensors = True
+    plug_contact_forces = None
 
 
 @configclass
@@ -121,9 +115,7 @@ class PortInsertionEnvCfg(AICTaskEnvCfg):
     terminations: PortInsertionTerminationsCfg = PortInsertionTerminationsCfg()
 
     def __post_init__(self) -> None:
-        self.scene.robot.spawn.activate_contact_sensors = True
         super().__post_init__()
-        self.scene.robot.spawn.activate_contact_sensors = True
 
         for name in (
             "end_effector_position_tracking",

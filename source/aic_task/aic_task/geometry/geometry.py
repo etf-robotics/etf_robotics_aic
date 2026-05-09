@@ -17,15 +17,15 @@ Vector3 = tuple[float, float, float]
 
 NIC_CARD_USD_RELATIVE_PATH: Final[str] = "assets/NIC Card/nic_card.usd"
 
-# Paths are relative to the NIC-card asset root.  At runtime they will sit under
-# the scene prim for the rigid object, e.g. ``.../nic_card/nic_card_link/...``.
-NIC_CARD_LINK_PATH: Final[str] = "/nic_card_link"
-VISUAL_PATH: Final[str] = "/nic_card_link/visual"
+# Paths are relative to the NIC-card asset root.  In the current USD hierarchy
+# the root prim itself contains ``visual`` and ``sfp_port_*_link`` children.
+NIC_CARD_LINK_PATH: Final[str] = ""
+VISUAL_PATH: Final[str] = "/visual"
 
 # Existing USD node on the port edge opposite the keying tooth.  It is a visible
 # semantic anchor for port 0; port 1 derives the same anchor by translating this
 # offset from port 0's entrance to port 1's entrance.
-OPPOSITE_TOOTH_NODE_PATH: Final[str] = "/nic_card_link/visual/node_0099100_011LFC_002"
+OPPOSITE_TOOTH_NODE_PATH: Final[str] = "/visual/node_0099100_011LFC_002"
 OPPOSITE_TOOTH_NODE_OLD_POS_NIC: Final[Vector3] = (-0.01025, -0.07725, 0.0103515)
 OPPOSITE_TOOTH_NODE_OLD_RPY_DEG_NIC: Final[Vector3] = (179.227, 0.0, 0.0)
 
@@ -44,14 +44,14 @@ class PortFramePaths:
 PORTS: Final[tuple[PortFramePaths, ...]] = (
     PortFramePaths(
         name="sfp_port_0",
-        entrance_path="/nic_card_link/sfp_port_0_link/sfp_port_0_link_entrance",
-        seat_path="/nic_card_link/sfp_port_0_link",
+        entrance_path="/sfp_port_0_link/sfp_port_0_link_entrance",
+        seat_path="/sfp_port_0_link",
         opposite_tooth_node_path=OPPOSITE_TOOTH_NODE_PATH,
     ),
     PortFramePaths(
         name="sfp_port_1",
-        entrance_path="/nic_card_link/sfp_port_1_link/sfp_port_1_link_entrance",
-        seat_path="/nic_card_link/sfp_port_1_link",
+        entrance_path="/sfp_port_1_link/sfp_port_1_link_entrance",
+        seat_path="/sfp_port_1_link",
         opposite_tooth_source_port="sfp_port_0",
     ),
 )
