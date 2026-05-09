@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import torch
 
 from isaaclab.assets import Articulation, RigidObject
+from isaaclab.managers import ManagerTermBase
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.math import quat_error_magnitude, quat_mul
 
@@ -21,9 +22,11 @@ from .rewards import (
     _body_point_pos_w,
     _body_point_quat_w,
     _first_body_id,
+    _first_matching_body_id,
     _target_position_w,
     _z_axis_quat,
 )
+from aic_task.geometry import compute_port_runtime_tensors
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
@@ -164,3 +167,67 @@ def cheat_ee_above_port_success(
     orientation_error = quat_error_magnitude(ee_quat_w, target_quat_w)
 
     return (xy_error < xy_threshold) & (z_error < z_threshold) & (orientation_error < orientation_threshold)
+
+
+def cheat_plug_inserted_success(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    target_cfg: SceneEntityCfg = SceneEntityCfg("nic_card"),
+    plug_center_body: str = "sfp_module_link",
+    plug_tip_body: str = "sfp_tip_link",
+    port_name: str = "sfp_port_0",
+    position_threshold: float = 0.004,
+    axis_threshold: float = 0.13962634015954636,
+) -> torch.Tensor:
+    """Return success when plug tip is seated and its center->tip axis matches insertion."""
+    robot: Articulation = env.scene[asset_cfg.name]
+    port = compute_port_runtime_tensors(env, target_name=target_cfg.name, port_name=port_name)
+    center_id = _first_matching_body_id(robot, plug_center_body)
+    tip_id = _first_matching_body_id(robot, plug_tip_body)
+
+    center_pos_w = robot.data.body_pos_w[:, center_id, :]
+    tip_pos_w = robot.data.body_pos_w[:, tip_id, :]
+    plug_axis_w = tip_pos_w - center_pos_w
+    plug_axis_w = plug_axis_w / torch.linalg.norm(plug_axis_w, dim=1, keepdim=True).clamp_min(1.0e-9)
+
+    position_error = torch.linalg.norm(tip_pos_w - port.seat_w, dim=1)
+    axis_error = torch.acos(torch.sum(plug_axis_w * port.insertion_axis_w, dim=1).clamp(-1.0, 1.0))
+    return (position_error < position_threshold) & (axis_error < axis_threshold)
+
+
+class PlugInsertedSuccess(ManagerTermBase):
+    """Stateful insertion success that requires the seated condition for N steps."""
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._success_counts = torch.zeros(env.num_envs, dtype=torch.int32, device=env.device)
+
+    def reset(self, env_ids=None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
+        self._success_counts[env_ids] = 0
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        target_cfg: SceneEntityCfg = SceneEntityCfg("nic_card"),
+        plug_center_body: str = "sfp_module_link",
+        plug_tip_body: str = "sfp_tip_link",
+        port_name: str = "sfp_port_0",
+        position_threshold: float = 0.004,
+        axis_threshold: float = 0.13962634015954636,
+        required_steps: int = 5,
+    ) -> torch.Tensor:
+        inserted = cheat_plug_inserted_success(
+            env,
+            asset_cfg=asset_cfg,
+            target_cfg=target_cfg,
+            plug_center_body=plug_center_body,
+            plug_tip_body=plug_tip_body,
+            port_name=port_name,
+            position_threshold=position_threshold,
+            axis_threshold=axis_threshold,
+        )
+        self._success_counts = torch.where(inserted, self._success_counts + 1, torch.zeros_like(self._success_counts))
+        return self._success_counts >= required_steps

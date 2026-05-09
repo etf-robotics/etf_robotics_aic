@@ -1,37 +1,39 @@
-"""Port keypoint layout used for visual-oracle dataset labels.
-
-The points are expressed in the ``nic_card`` asset frame.  They are deliberately
-small and semantic rather than mesh-derived: the first iteration needs stable
-visual supervision for the approach frame, not a full CAD annotation pipeline.
-"""
+"""Port keypoint layouts for visual-oracle insertion datasets."""
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
 import torch
 
-from aic_task.tasks.manager_based.port_approach.port_approach_env_cfg import (
-    NIC_PORT_APPROACH_OFFSET,
-    NIC_PORT_APPROACH_RPY,
-    NIC_PORT_ENTRY_OFFSET,
+from aic_task.geometry import (
+    AXIS_KEYPOINT_LENGTH,
+    PORT_KEYPOINTS_LOCAL_FALLBACK,
+    PORT_LONG_HALF,
+    PORT_Y_HALF_FALLBACK,
 )
 
-DEFAULT_MOUTH_HALF_WIDTH = 0.007
-DEFAULT_MOUTH_HALF_HEIGHT = 0.0045
-DEFAULT_AXIS_LENGTH = 0.012
+DEFAULT_MOUTH_HALF_WIDTH = PORT_LONG_HALF
+DEFAULT_MOUTH_HALF_HEIGHT = PORT_Y_HALF_FALLBACK
+DEFAULT_AXIS_LENGTH = AXIS_KEYPOINT_LENGTH
 
 
 @dataclass(frozen=True)
 class PortKeypointLayout:
-    """Named 3D keypoints expressed in the NIC-card frame."""
+    """Named 3D keypoints for a port.
+
+    For the new insertion pipeline, ``use_usd_geometry`` means the points are
+    resolved from live USD frames by ``projection.compute_port_keypoints_w``.
+    ``points_nic`` remains as a fallback/compatibility representation.
+    """
 
     names: tuple[str, ...]
     points_nic: tuple[tuple[float, float, float], ...]
+    port_name: str = "sfp_port_0"
+    use_usd_geometry: bool = True
 
     def as_tensor(self, *, device: torch.device | str, dtype: torch.dtype = torch.float32) -> torch.Tensor:
-        """Return keypoints as a ``(K, 3)`` tensor."""
+        """Return fallback keypoints as a ``(K, 3)`` tensor."""
         return torch.tensor(self.points_nic, dtype=dtype, device=device)
 
     def index(self, name: str) -> int:
@@ -47,45 +49,26 @@ def make_default_port_keypoint_layout(
     mouth_half_width: float = DEFAULT_MOUTH_HALF_WIDTH,
     mouth_half_height: float = DEFAULT_MOUTH_HALF_HEIGHT,
     axis_length: float = DEFAULT_AXIS_LENGTH,
+    port_name: str = "sfp_port_0",
+    use_usd_geometry: bool = True,
 ) -> PortKeypointLayout:
-    """Create the default semantic keypoint layout for the NIC port.
+    """Create the default semantic keypoint layout for the NIC SFP port.
 
-    ``NIC_PORT_APPROACH_RPY`` defines the local approach frame: its ``+Z`` axis is
-    the insertion direction.  Mouth corners lie in the frame's local XY plane at
-    the entry point; axis helper points give the perception model orientation
-    supervision even when corners are partially occluded.
+    The legacy keyword arguments are accepted so existing scripts keep parsing,
+    but the V1 insertion layout is driven by ``aic_task.geometry``.  When
+    ``use_usd_geometry`` is true, runtime USD frames override these fallback
+    points during projection.
     """
-    global_offset = _vec(keypoint_offset)
-    entry = _vec(NIC_PORT_ENTRY_OFFSET if entry_offset is None else entry_offset) + global_offset
-    approach = _vec(NIC_PORT_APPROACH_OFFSET if approach_offset is None else approach_offset) + global_offset
-    rot = _rpy_xyz_matrix(*NIC_PORT_APPROACH_RPY)
-
-    def at_entry(local_xyz: tuple[float, float, float]) -> tuple[float, float, float]:
-        return _tuple(entry + rot @ _vec(local_xyz))
-
-    names = (
-        "entry_center",
-        "approach_center",
-        "axis_x_plus",
-        "axis_y_plus",
-        "axis_z_plus",
-        "mouth_top_left",
-        "mouth_top_right",
-        "mouth_bottom_right",
-        "mouth_bottom_left",
+    del entry_offset, approach_offset, mouth_half_width, mouth_half_height, axis_length
+    offset = _vec(keypoint_offset)
+    names = tuple(PORT_KEYPOINTS_LOCAL_FALLBACK.keys())
+    points = tuple(_tuple(_vec(point) + offset) for point in PORT_KEYPOINTS_LOCAL_FALLBACK.values())
+    return PortKeypointLayout(
+        names=names,
+        points_nic=points,
+        port_name=port_name,
+        use_usd_geometry=use_usd_geometry,
     )
-    points = (
-        _tuple(entry),
-        _tuple(approach),
-        at_entry((axis_length, 0.0, 0.0)),
-        at_entry((0.0, axis_length, 0.0)),
-        at_entry((0.0, 0.0, axis_length)),
-        at_entry((-mouth_half_width, -mouth_half_height, 0.0)),
-        at_entry((mouth_half_width, -mouth_half_height, 0.0)),
-        at_entry((mouth_half_width, mouth_half_height, 0.0)),
-        at_entry((-mouth_half_width, mouth_half_height, 0.0)),
-    )
-    return PortKeypointLayout(names=names, points_nic=points)
 
 
 def _vec(values: tuple[float, float, float]) -> torch.Tensor:
@@ -94,15 +77,3 @@ def _vec(values: tuple[float, float, float]) -> torch.Tensor:
 
 def _tuple(values: torch.Tensor) -> tuple[float, float, float]:
     return (float(values[0]), float(values[1]), float(values[2]))
-
-
-def _rpy_xyz_matrix(roll: float, pitch: float, yaw: float) -> torch.Tensor:
-    """Return an XYZ Euler rotation matrix matching Isaac Lab's RPY convention."""
-    cr, sr = math.cos(roll), math.sin(roll)
-    cp, sp = math.cos(pitch), math.sin(pitch)
-    cy, sy = math.cos(yaw), math.sin(yaw)
-
-    rx = torch.tensor(((1.0, 0.0, 0.0), (0.0, cr, -sr), (0.0, sr, cr)), dtype=torch.float64)
-    ry = torch.tensor(((cp, 0.0, sp), (0.0, 1.0, 0.0), (-sp, 0.0, cp)), dtype=torch.float64)
-    rz = torch.tensor(((cy, -sy, 0.0), (sy, cy, 0.0), (0.0, 0.0, 1.0)), dtype=torch.float64)
-    return rz @ ry @ rx

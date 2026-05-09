@@ -8,6 +8,8 @@ import torch
 
 import isaaclab.utils.math as math_utils
 
+from aic_task.geometry import compute_port_keypoints_w_from_runtime, compute_port_runtime_tensors
+
 from .port_keypoints import PortKeypointLayout
 
 
@@ -59,8 +61,9 @@ def compute_port_keypoint_labels(
             "quat_w": camera_quat_w,
         }
 
+    keypoint_names = tuple(getattr(layout, "_runtime_names", layout.names))
     return {
-        "keypoint_names": layout.names,
+        "keypoint_names": keypoint_names,
         "points_w": points_w,
         "cameras": camera_labels,
     }
@@ -68,6 +71,12 @@ def compute_port_keypoint_labels(
 
 def compute_port_keypoints_w(env, layout: PortKeypointLayout, *, target_name: str = "nic_card") -> torch.Tensor:
     """Return port keypoint positions in world frame as ``(N, K, 3)``."""
+    if getattr(layout, "use_usd_geometry", False):
+        runtime = compute_port_runtime_tensors(env, target_name=target_name, port_name=layout.port_name)
+        names, points_w = compute_port_keypoints_w_from_runtime(runtime)
+        object.__setattr__(layout, "_runtime_names", names)
+        return points_w
+
     target = env.scene[target_name]
     points_nic = layout.as_tensor(device=target.data.root_pos_w.device, dtype=target.data.root_pos_w.dtype)
     num_envs = target.data.root_pos_w.shape[0]

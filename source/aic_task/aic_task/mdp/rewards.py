@@ -21,6 +21,8 @@ from isaaclab.utils.math import (
     quat_mul,
 )
 
+from aic_task.geometry import compute_port_runtime_tensors
+
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
@@ -40,6 +42,15 @@ def _first_body_id(asset: Articulation | RigidObject, asset_cfg: SceneEntityCfg,
 
     body_ids, _ = asset.find_bodies(body_names, preserve_order=True)
     return body_ids[0]
+
+
+def _first_matching_body_id(asset: Articulation | RigidObject, body_name_expr: str) -> int:
+    """Resolve the first body id matching an explicit name/regex."""
+    body_ids, _ = asset.find_bodies(body_name_expr, preserve_order=True)
+    if len(body_ids) == 0:
+        available = ", ".join(getattr(asset, "body_names", []))
+        raise KeyError(f"Body '{body_name_expr}' not found. Available bodies: {available}")
+    return int(body_ids[0])
 
 
 def _target_position_w(
@@ -446,3 +457,57 @@ def cheat_ee_orientation_error_to_nic(
         asset_fallback_body_name=asset_fallback_body_name,
         z_rot_offset_deg=z_rot_offset_deg,
     )
+
+
+def cheat_plug_tip_to_port_seat_distance_l2(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    target_cfg: SceneEntityCfg = SceneEntityCfg("nic_card"),
+    plug_tip_body: str = "sfp_tip_link",
+    port_name: str = "sfp_port_0",
+) -> torch.Tensor:
+    """Penalize plug-tip distance to the USD-resolved port seat center."""
+    robot: Articulation = env.scene[asset_cfg.name]
+    port = compute_port_runtime_tensors(env, target_name=target_cfg.name, port_name=port_name)
+    tip_id = _first_matching_body_id(robot, plug_tip_body)
+    tip_pos_w = robot.data.body_pos_w[:, tip_id, :]
+    return torch.linalg.norm(tip_pos_w - port.seat_w, dim=1)
+
+
+def cheat_plug_axis_alignment_error(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    target_cfg: SceneEntityCfg = SceneEntityCfg("nic_card"),
+    plug_center_body: str = "sfp_module_link",
+    plug_tip_body: str = "sfp_tip_link",
+    port_name: str = "sfp_port_0",
+) -> torch.Tensor:
+    """Penalize angular error between plug center->tip and the insertion axis."""
+    robot: Articulation = env.scene[asset_cfg.name]
+    port = compute_port_runtime_tensors(env, target_name=target_cfg.name, port_name=port_name)
+    center_id = _first_matching_body_id(robot, plug_center_body)
+    tip_id = _first_matching_body_id(robot, plug_tip_body)
+    axis = robot.data.body_pos_w[:, tip_id, :] - robot.data.body_pos_w[:, center_id, :]
+    axis = axis / torch.linalg.norm(axis, dim=1, keepdim=True).clamp_min(1.0e-9)
+    dot = torch.sum(axis * port.insertion_axis_w, dim=1).clamp(-1.0, 1.0)
+    return torch.acos(dot)
+
+
+def plug_contact_force_norm(
+    env: ManagerBasedRLEnv,
+    sensor_name: str = "plug_contact_forces",
+    body_regex: str = ".*sfp.*|.*plug.*|.*tip.*",
+) -> torch.Tensor:
+    """Penalize net contact-force norm on plug-related sensor bodies."""
+    if sensor_name not in env.scene.sensors:
+        return torch.zeros(env.num_envs, device=env.device)
+
+    import re
+
+    sensor = env.scene.sensors[sensor_name]
+    forces = sensor.data.net_forces_w
+    body_ids = [idx for idx, name in enumerate(sensor.body_names) if re.search(body_regex, name)]
+    if not body_ids:
+        body_ids = list(range(forces.shape[1]))
+    net_force = forces[:, body_ids, :].sum(dim=1)
+    return torch.linalg.norm(net_force, dim=1)

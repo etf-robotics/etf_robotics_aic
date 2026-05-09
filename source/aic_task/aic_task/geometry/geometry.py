@@ -66,6 +66,13 @@ PORT_LONG_TOTAL: Final[float] = 2.0 * PORT_LONG_HALF
 PORT_WIDTH_FALLBACK: Final[float] = 0.009
 PORT_Y_HALF_FALLBACK: Final[float] = 0.5 * PORT_WIDTH_FALLBACK
 
+# Scripted-controller distances from the port entrance.  They are intentionally
+# conservative for V1 data generation.
+COARSE_APPROACH_GAP: Final[float] = 0.035
+PREINSERT_GAP: Final[float] = 0.010
+BACKOFF_DISTANCE: Final[float] = 0.003
+AXIS_KEYPOINT_LENGTH: Final[float] = 0.012
+
 # Fallback only.  The source of truth is the composed transform difference
 # between ``sfp_port_*_link_entrance`` and ``sfp_port_*_link``.
 PLUG_INSERTION_DEPTH_FALLBACK: Final[float] = 0.044
@@ -143,15 +150,29 @@ def make_port_keypoints_local(
     """Return entrance-centered local keypoints for a port mouth."""
     keypoints = {
         "entrance_center": (0.0, 0.0, 0.0),
-        "opposite_tooth_anchor": (0.0, y_half, 0.0),
-        "tooth_anchor": (0.0, -y_half, 0.0),
-        "corner_opposite_left": (-PORT_LONG_HALF, y_half, 0.0),
-        "corner_opposite_right": (PORT_LONG_HALF, y_half, 0.0),
-        "corner_tooth_left": (-PORT_LONG_HALF, -y_half, 0.0),
-        "corner_tooth_right": (PORT_LONG_HALF, -y_half, 0.0),
+        "preinsert_center": (0.0, 0.0, -PREINSERT_GAP),
     }
     if insertion_depth_value is not None:
         keypoints["seat_center"] = (0.0, 0.0, insertion_depth_value)
+    keypoints.update(
+        {
+            # Legacy aliases kept so older overlay/approach scripts still run while
+            # the insertion dataset migrates to the newer semantic names.
+            "entry_center": (0.0, 0.0, 0.0),
+            "approach_center": (0.0, 0.0, -PREINSERT_GAP),
+            "opposite_tooth_anchor": (0.0, y_half, 0.0),
+            "tooth_anchor": (0.0, -y_half, 0.0),
+            "corner_opposite_left": (-PORT_LONG_HALF, y_half, 0.0),
+            "corner_opposite_right": (PORT_LONG_HALF, y_half, 0.0),
+            "corner_tooth_left": (-PORT_LONG_HALF, -y_half, 0.0),
+            "corner_tooth_right": (PORT_LONG_HALF, -y_half, 0.0),
+            "mouth_top_left": (-PORT_LONG_HALF, y_half, 0.0),
+            "mouth_top_right": (PORT_LONG_HALF, y_half, 0.0),
+            "mouth_bottom_left": (-PORT_LONG_HALF, -y_half, 0.0),
+            "mouth_bottom_right": (PORT_LONG_HALF, -y_half, 0.0),
+            "axis_insertion_plus": (0.0, 0.0, AXIS_KEYPOINT_LENGTH),
+        }
+    )
     return keypoints
 
 
