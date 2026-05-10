@@ -54,7 +54,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=3.0e-4, help="AdamW learning rate.")
     parser.add_argument("--weight_decay", type=float, default=1.0e-4, help="AdamW weight decay.")
     parser.add_argument("--grad_clip", type=float, default=1.0, help="Gradient norm clip. <=0 disables.")
-    parser.add_argument("--num_workers", type=int, default=2, help="DataLoader workers. Use 0 if HDF5/FS is unhappy.")
+    parser.add_argument("--num_workers", type=int, default=0, help="DataLoader workers. Use 0 to avoid Docker /dev/shm issues.")
+    parser.add_argument("--prefetch_factor", type=int, default=1, help="Batches prefetched per worker when num_workers > 0.")
+    parser.add_argument("--pin_memory", action="store_true", default=False, help="Enable CUDA pinned-memory batches.")
     parser.add_argument("--amp", action="store_true", default=False, help="Use CUDA automatic mixed precision.")
 
     parser.add_argument("--action_loss_weight", type=float, default=1.0, help="Weight for normalized action BC loss.")
@@ -378,7 +380,7 @@ def main() -> None:
     val_loader = make_loader(val_dataset, args, shuffle=False, device=device) if val_samples else None
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, args.epochs))
-    scaler = torch.cuda.amp.GradScaler(enabled=args.amp and device.type == "cuda")
+    scaler = torch.amp.GradScaler("cuda", enabled=args.amp and device.type == "cuda")
 
     run_config = {
         "args": vars(args),
@@ -460,15 +462,17 @@ def main() -> None:
 
 
 def make_loader(dataset: Dataset, args: argparse.Namespace, *, shuffle: bool, device: torch.device) -> DataLoader:
-    return DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=shuffle,
-        num_workers=args.num_workers,
-        pin_memory=device.type == "cuda",
-        drop_last=shuffle and len(dataset) >= args.batch_size,
-        persistent_workers=args.num_workers > 0,
-    )
+    kwargs = {
+        "batch_size": args.batch_size,
+        "shuffle": shuffle,
+        "num_workers": args.num_workers,
+        "pin_memory": args.pin_memory and device.type == "cuda",
+        "drop_last": shuffle and len(dataset) >= args.batch_size,
+        "persistent_workers": args.num_workers > 0,
+    }
+    if args.num_workers > 0:
+        kwargs["prefetch_factor"] = max(1, args.prefetch_factor)
+    return DataLoader(dataset, **kwargs)
 
 
 def run_epoch(
