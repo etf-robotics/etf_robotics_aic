@@ -41,6 +41,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output_dir", type=str, default="./logs/il_port_bc", help="Directory for checkpoints/logs.")
     parser.add_argument("--camera_names", nargs="+", default=None, help="Camera streams to use. Defaults to dataset metadata.")
     parser.add_argument("--proprio_keys", nargs="+", default=list(DEFAULT_PROPRIO_KEYS), help="Proprio datasets to concatenate.")
+    parser.add_argument(
+        "--proprio_joint_count",
+        type=int,
+        default=0,
+        help="If >0, trim joint_pos and joint_vel to the first N values (robot joints only).",
+    )
     parser.add_argument("--target_action_key", type=str, default="actions/env_action", help="Dataset path for BC targets.")
     parser.add_argument("--fallback_action_key", type=str, default="actions/oracle", help="Fallback action path for older files.")
     parser.add_argument("--successful_only", action="store_true", default=False, help="Use only episodes marked success=True.")
@@ -107,12 +113,14 @@ class PortInsertionHdf5Dataset(Dataset):
         *,
         camera_names: list[str],
         proprio_keys: list[str],
+        proprio_joint_count: int,
         num_keypoints: int,
         keypoint_mask_key: str = "keypoints_visible",
     ):
         self.samples = samples
         self.camera_names = camera_names
         self.proprio_keys = proprio_keys
+        self.proprio_joint_count = proprio_joint_count
         self.num_keypoints = num_keypoints
         self.keypoint_mask_key = keypoint_mask_key
         self._files: dict[str, h5py.File] = {}
@@ -182,7 +190,10 @@ class PortInsertionHdf5Dataset(Dataset):
             path = f"proprio/{key}"
             if path not in demo:
                 raise KeyError(f"Missing '{path}' in {demo.name}. Available proprio keys: {list(demo['proprio'].keys())}")
-            values.append(np.asarray(demo[path][frame_index], dtype=np.float32).reshape(-1))
+            value = np.asarray(demo[path][frame_index], dtype=np.float32).reshape(-1)
+            if self.proprio_joint_count > 0 and key in ("joint_pos", "joint_vel"):
+                value = value[: self.proprio_joint_count]
+            values.append(value)
         return np.concatenate(values, axis=0).astype(np.float32)
 
     @staticmethod
@@ -342,12 +353,14 @@ def main() -> None:
         train_samples,
         camera_names=camera_names,
         proprio_keys=args.proprio_keys,
+        proprio_joint_count=args.proprio_joint_count,
         num_keypoints=num_keypoints,
     )
     val_dataset = PortInsertionHdf5Dataset(
         val_samples,
         camera_names=camera_names,
         proprio_keys=args.proprio_keys,
+        proprio_joint_count=args.proprio_joint_count,
         num_keypoints=num_keypoints,
     )
 
@@ -386,6 +399,7 @@ def main() -> None:
         "args": vars(args),
         "camera_names": camera_names,
         "proprio_keys": args.proprio_keys,
+        "proprio_joint_count": args.proprio_joint_count,
         "target_action_key": args.target_action_key,
         "image_channels": image_channels,
         "image_size": args.image_size,
@@ -491,7 +505,13 @@ def run_epoch(
     model.train(training)
     totals = {"loss": 0.0, "action": 0.0, "keypoint": 0.0, "phase": 0.0, "weight": 0.0}
 
-    for batch in loader:
+    for batch_idx, batch in enumerate(loader):
+        if batch_idx == 0:
+            print("[INFO] First batch loaded", flush=True)
+        if batch_idx % 20 == 0:
+            print(f"[INFO] batch {batch_idx}/{len(loader)}", flush=True)
+
+    
         image = batch["image"].to(device, non_blocking=True)
         proprio = batch["proprio"].to(device, non_blocking=True)
         action = batch["action"].to(device, non_blocking=True)
