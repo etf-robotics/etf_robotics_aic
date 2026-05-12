@@ -64,11 +64,11 @@ def parse_args() -> argparse.Namespace:
         default="AIC-Port-Insertion-v0",
         help="Task name stored in checkpoint metadata.",
     )
-    parser.add_argument("--algo", type=str, default="bc", help="robomimic algorithm. This script is tuned for bc.")
+    parser.add_argument("--algo", type=str, default="bc_rnn", help="robomimic algorithm. This script is tuned for bc.")
     parser.add_argument("--name", type=str, default=None, help="Experiment name. Defaults to dataset stem.")
     parser.add_argument("--output_dir", type=str, default="./logs/aic/robomimic", help="Root output directory.")
 
-    parser.add_argument("--epochs", type=int, default=200)
+    parser.add_argument("--epochs", type=int, default=600)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1.0e-4)
     parser.add_argument("--num_workers", type=int, default=0)
@@ -267,10 +267,10 @@ def build_config(
         config.train.hdf5_cache_mode = "low_dim"
         config.train.hdf5_use_swmr = True
         config.train.hdf5_load_next_obs = False
-        config.train.hdf5_normalize_obs = False
+        config.train.hdf5_normalize_obs = True
         config.train.hdf5_filter_key = None
         config.train.hdf5_validation_filter_key = None
-        config.train.seq_length = 1
+        config.train.seq_length = 10
         config.train.pad_seq_length = True
         config.train.frame_stack = 1
         config.train.pad_frame_stack = True
@@ -293,19 +293,28 @@ def build_config(
         config.experiment.save.on_best_rollout_return = False
         config.experiment.save.on_best_rollout_success_rate = False
 
-        config.algo.optim_params.policy.learning_rate.initial = args.lr
-        config.algo.loss.l2_weight = 1.0
-        config.algo.loss.l1_weight = 0.0
-        config.algo.loss.cos_weight = 0.0
+        config.algo.optim_params.policy.learning_rate.initial = 1e-4
+        config.algo.optim_params.policy.grad_norm_clip = 1.0
+        config.algo.optim_params.policy.regularization.L2 = 1e-5
+        config.algo.optim_params.policy.learning_rate.decay_factor = 0.1
+        config.algo.optim_params.policy.learning_rate.epoch_schedule = [300]
+        config.algo.optim_params.policy.learning_rate.scheduler_type = "multistep"
         config.algo.actor_layer_dims = [1024, 1024]
         if "gaussian" in config.algo:
             config.algo.gaussian.enabled = False
         if "gmm" in config.algo:
-            config.algo.gmm.enabled = False
+            config.algo.gmm.enabled = True
+            config.algo.gmm.num_modes = 5
+            config.algo.gmm.min_std = 0.0001
+            config.algo.gmm.use_tanh = False
         if "vae" in config.algo:
             config.algo.vae.enabled = False
         if "rnn" in config.algo:
-            config.algo.rnn.enabled = False
+            config.algo.rnn.enabled = True
+            config.algo.rnn.rnn_hidden_dim = 400
+            config.algo.rnn.rnn_num_layers = 2
+            config.algo.rnn.rnn_type = "LSTM"
+            config.algo.rnn.horizon = 10
         if "transformer" in config.algo:
             config.algo.transformer.enabled = False
 
@@ -320,19 +329,22 @@ def build_config(
 
         rgb_encoder = config.observation.encoder.rgb
         rgb_encoder.core_class = "VisualCore"
-        rgb_encoder.core_kwargs.feature_dimension = 64
+        rgb_encoder.core_kwargs.feature_dimension = 128
         rgb_encoder.core_kwargs.flatten = True
         rgb_encoder.core_kwargs.backbone_class = "ResNet18Conv"
-        rgb_encoder.core_kwargs.backbone_kwargs.pretrained = False
+        rgb_encoder.core_kwargs.backbone_kwargs.pretrained = True
         rgb_encoder.core_kwargs.backbone_kwargs.input_coord_conv = False
         rgb_encoder.core_kwargs.pool_class = "SpatialSoftmax"
-        rgb_encoder.core_kwargs.pool_kwargs.num_kp = 32
+        rgb_encoder.core_kwargs.pool_kwargs.num_kp = 64
         rgb_encoder.core_kwargs.pool_kwargs.learnable_temperature = False
         rgb_encoder.core_kwargs.pool_kwargs.temperature = 1.0
         rgb_encoder.core_kwargs.pool_kwargs.noise_std = 0.0
         rgb_encoder.core_kwargs.pool_kwargs.output_variance = False
-        rgb_encoder.obs_randomizer_class = None
-        rgb_encoder.obs_randomizer_kwargs = {}
+        rgb_encoder.obs_randomizer_class = "CropRandomizer"
+        rgb_encoder.obs_randomizer_kwargs.crop_height = 200
+        rgb_encoder.obs_randomizer_kwargs.crop_width = 200
+        rgb_encoder.obs_randomizer_kwargs.num_crops = 1
+        rgb_encoder.obs_randomizer_kwargs.pos_enc = False
 
     config.lock()
     return config
