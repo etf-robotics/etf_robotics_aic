@@ -116,17 +116,19 @@ def compute_port_insertion_oracle(
     target_roll_offset: float = 0.0,
     pos_gain: float = 0.7,
     rot_gain: float = 0.45,
+    insert_pos_gain: float = 1.2,
+    insert_rot_gain: float = 0.8,
     max_pos_delta: float = 0.012,
     max_rot_delta: float = 0.14,
-    insert_max_pos_delta: float = 0.002,
+    insert_max_pos_delta: float = 0.001,
     insert_max_rot_delta: float = 0.045,
     contact_force_threshold: float = 1.0,
-    lateral_force_limit: float = 4.0,
-    axis_force_limit: float = 10.0,
+    lateral_force_limit: float = 400.0,
+    axis_force_limit: float = 1000.0,
     force_phase_backoff: bool = True,
     straighten_axis_mode: Literal["port", "world_down", "disabled"] = "disabled",
     center_enable_distance: float = 0.060,
-    rotation_enable_distance: float = 0.060,
+    rotation_enable_distance: float = 0.6,
     align_lift: float = 0.070,
     env_index: int = 0,
 ) -> PortInsertionOracleOutput:
@@ -216,6 +218,7 @@ def compute_port_insertion_oracle(
         desired_axis_w,
         desired_x_axis_w,
     )
+    is_insert_phase = phase == InsertionTeacherPhase.INSERT
     processed_action = _relative_ik_processed_action(
         robot,
         tcp_pos_w,
@@ -223,10 +226,10 @@ def compute_port_insertion_oracle(
         desired_tcp_pos_w,
         desired_tcp_quat_w,
         action_scale,
-        pos_gain=pos_gain,
-        rot_gain=rot_gain,
-        max_pos_delta=insert_max_pos_delta if phase == InsertionTeacherPhase.INSERT else max_pos_delta,
-        max_rot_delta=insert_max_rot_delta if phase == InsertionTeacherPhase.INSERT else max_rot_delta,
+        pos_gain=insert_pos_gain if is_insert_phase else pos_gain,
+        rot_gain=insert_rot_gain if is_insert_phase else rot_gain,
+        max_pos_delta=insert_max_pos_delta if is_insert_phase else max_pos_delta,
+        max_rot_delta=insert_max_rot_delta if is_insert_phase else max_rot_delta,
     )
     raw_action = processed_action / torch.clamp(action_scale, min=1.0e-9)
 
@@ -293,9 +296,9 @@ def choose_insertion_phase(
     center_camera: str = "center_camera",
     vertical_threshold: float = math.radians(8.0),
     align_axis_threshold: float = math.radians(8.0),
-    coarse_threshold: float = 0.020,
+    coarse_threshold: float = 0.2,
     center_enable_distance: float = 0.060,
-    preinsert_threshold: float = 0.012,
+    preinsert_threshold: float = 0.18,
     seat_threshold: float = 0.004,
 ) -> InsertionTeacherPhase:
     """Choose the visual-compatible insertion phase."""

@@ -36,19 +36,19 @@ parser.add_argument("--settle_seconds", type=float, default=1.0)
 parser.add_argument("--pos_gain", type=float, default=0.7)
 parser.add_argument("--rot_gain", type=float, default=0.45)
 parser.add_argument("--max_pos_delta", type=float, default=0.012)
-parser.add_argument("--max_rot_delta", type=float, default=0.025)
-parser.add_argument("--insert_max_pos_delta", type=float, default=0.004)
-parser.add_argument("--insert_max_rot_delta", type=float, default=0.015)
+parser.add_argument("--max_rot_delta", type=float, default=0.045)
+parser.add_argument("--insert_max_pos_delta", type=float, default=0.0015)
+parser.add_argument("--insert_max_rot_delta", type=float, default=0.01)
 # Success: stationary-gripper window + tail to record
 parser.add_argument("--success_stationary_distance", type=float, default=0.01)
-parser.add_argument("--success_stationary_seconds", type=float, default=2.5)
-parser.add_argument("--success_record_tail_seconds", type=float, default=1.0)
+parser.add_argument("--success_stationary_seconds", type=float, default=1.0)
+parser.add_argument("--success_record_tail_seconds", type=float, default=0.0)
 # Oracle target tuning
 parser.add_argument(
     "--target_offset_port_frame",
     type=float,
     nargs=3,
-    default=(0.0, 0.0, 0.0),
+    default=(-0.001, 0.003, 0.0),
     metavar=("DX", "DY", "DZ"),
 )
 parser.add_argument("--target_roll_offset_deg", type=float, default=-13.0)

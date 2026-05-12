@@ -76,8 +76,8 @@ class PortInsertionTerminationsCfg(TerminationsCfg):
         func=mdp.GripperStationarySuccess,
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="gripper_tcp"),
-            "movement_threshold": 0.01,
-            "orientation_threshold": 0.001,
+            "movement_threshold": 0.0,
+            "orientation_threshold": 0.0,
             "required_seconds": 5.0,
         },
     )

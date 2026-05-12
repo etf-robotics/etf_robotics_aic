@@ -131,8 +131,8 @@ class PortApproachTerminationsCfg(TerminationsCfg):
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="gripper_tcp"),
             "target_cfg": SceneEntityCfg(TARGET_NAME),
-            "position_threshold": 0.01,
-            "orientation_threshold": 0.01,
+            "position_threshold": 0.0,
+            "orientation_threshold": 0.0,
             "asset_point_offset": CABLE_TIP_OFFSET_FROM_TCP,
             "target_point_offset": NIC_PORT_APPROACH_OFFSET,
             "asset_point_rpy": CABLE_TIP_RPY_FROM_TCP,
