@@ -19,6 +19,7 @@ parser.add_argument("--max_steps", type=int, default=0, help="Maximum play steps
 parser.add_argument("--step_hz", type=int, default=30, help="Wall-clock loop rate. 0 = run as fast as possible.")
 parser.add_argument("--camera_names", nargs="+", default=None, help="Override checkpoint camera names.")
 parser.add_argument("--proprio_keys", nargs="+", default=None, help="Override checkpoint proprio keys.")
+parser.add_argument("--proprio_joint_count", type=int, default=0, help="Trim joint_pos/joint_vel to the first N values for live proprio. 0 = use checkpoint value if available.")
 parser.add_argument("--image_size", type=int, default=0, help="Override checkpoint image size. 0 = checkpoint value.")
 parser.add_argument("--action_clip", type=float, default=1.0, help="Clamp raw env actions to [-clip, clip]. <=0 disables.")
 parser.add_argument("--action_scale", type=float, default=1.0, help="Extra multiplier on denormalized actions.")
@@ -100,6 +101,9 @@ def main() -> None:
     config = checkpoint.get("config", {})
     camera_names = list(args_cli.camera_names or config.get("camera_names", DEFAULT_CAMERAS))
     proprio_keys = list(args_cli.proprio_keys or config.get("proprio_keys", DEFAULT_PROPRIO_KEYS))
+    args_cli.proprio_joint_count = int(
+        args_cli.proprio_joint_count or config.get("proprio_joint_count", 0)
+    )
     image_size = int(args_cli.image_size or config.get("image_size", 128))
 
     _validate_cameras(env, camera_names)
@@ -203,9 +207,15 @@ def _read_proprio_batch(env: gym.Env, proprio_keys: list[str], device: torch.dev
     values = []
     for key in proprio_keys:
         if key == "joint_pos":
-            values.append(robot.data.joint_pos.to(device))
+            value = robot.data.joint_pos.to(device)
+            if args_cli.proprio_joint_count > 0:
+                value = value[:, : args_cli.proprio_joint_count]
+            values.append(value)
         elif key == "joint_vel":
-            values.append(robot.data.joint_vel.to(device))
+            value = robot.data.joint_vel.to(device)
+            if args_cli.proprio_joint_count > 0:
+                value = value[:, : args_cli.proprio_joint_count]
+            values.append(value)
         elif key == "tcp_pose_w":
             body_id = _first_body_id(robot, args_cli.tcp_body)
             values.append(torch.cat((robot.data.body_pos_w[:, body_id], robot.data.body_quat_w[:, body_id]), dim=1).to(device))

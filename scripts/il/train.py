@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--proprio_joint_count",
         type=int,
-        default=0,
+        default=6,
         help="If >0, trim joint_pos and joint_vel to the first N values (robot joints only).",
     )
     parser.add_argument("--target_action_key", type=str, default="actions/env_action", help="Dataset path for BC targets.")
