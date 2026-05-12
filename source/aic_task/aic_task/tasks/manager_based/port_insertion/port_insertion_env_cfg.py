@@ -34,9 +34,7 @@ PLUG_TIP_BODY = "sfp_tip_link"
 
 @configclass
 class PortInsertionSceneCfg(AICTaskSceneCfg):
-    """AIC scene for insertion without contact-force recording."""
-
-    plug_contact_forces = None
+    """AIC scene for insertion."""
 
 
 @configclass
@@ -79,7 +77,8 @@ class PortInsertionTerminationsCfg(TerminationsCfg):
         params={
             "asset_cfg": SceneEntityCfg("robot", body_names="gripper_tcp"),
             "movement_threshold": 0.01,
-            "required_seconds": 2.5,
+            "orientation_threshold": 0.001,
+            "required_seconds": 5.0,
         },
     )
 
@@ -109,7 +108,6 @@ class PortInsertionEnvCfg(AICTaskEnvCfg):
             setattr(self.rewards, name, None)
 
         self.episode_length_s = 120.0
-        self.actions.arm_action.scale = 0.035
 
         arm_actuator = self.scene.robot.actuators["arm"]
         arm_actuator.effort_limit_sim = 110.0

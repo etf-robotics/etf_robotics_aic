@@ -58,6 +58,26 @@ def _sample_axis(pose_range: dict, snap_step: dict, axis: str) -> float:
     return torch.empty(1).uniform_(lo, hi).item()
 
 
+def _yaw_quat(angles: torch.Tensor) -> torch.Tensor:
+    """Quaternion (wxyz) representing a rotation about world-Z by ``angles``."""
+    half = angles * 0.5
+    w = torch.cos(half)
+    z = torch.sin(half)
+    zeros = torch.zeros_like(angles)
+    return torch.stack([w, zeros, zeros, z], dim=-1)
+
+
+def _quat_mul(q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
+    """Hamilton product of two (..., 4) wxyz quaternions."""
+    w1, x1, y1, z1 = q1.unbind(-1)
+    w2, x2, y2, z2 = q2.unbind(-1)
+    w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+    x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+    y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+    z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+    return torch.stack([w, x, y, z], dim=-1)
+
+
 def _write_usd_xform_pose(
     stage,
     prim_path_template: str,
@@ -95,11 +115,17 @@ def randomize_board_and_parts(
     env_ids: torch.Tensor,
     board_scene_name: str = "task_board",
     board_default_pos: tuple[float, float, float] = (0.0, 0.0, 0.0),
-    board_range: dict = {"x": (0.0, 0.0), "y": (0.0, 0.0)},
+    board_range: dict = {"x": (0.0, 0.0), "y": (0.0, 0.0), "yaw": (0.0, 0.0)},
     parts: list[dict] = (),
     sync_usd_xforms: bool = True,
 ) -> None:
-    """Randomize a task board and rigid parts that are anchored to it."""
+    """Randomize a task board and rigid parts that are anchored to it.
+
+    The board can be jittered in x/y and rotated about world-Z by ``board_range["yaw"]``.
+    Parts are kept rigidly attached to the board: their per-part ``offset`` is treated
+    as a board-local vector and rotated into world by the sampled board yaw.
+    Per-part ``pose_range["yaw"]`` adds independent yaw jitter on top (default 0).
+    """
     device = env.device
     num_resets = len(env_ids)
     env_origins = env.scene.env_origins[env_ids]
@@ -110,32 +136,53 @@ def randomize_board_and_parts(
         if name not in _cached_orientations:
             _cached_orientations[name] = env.scene[name].data.root_state_w[:, 3:7].clone()
 
+    # --- Board pose: x/y jitter + world-Z yaw delta ---
     board_asset = env.scene[board_scene_name]
-    board_rot = _cached_orientations[board_scene_name][env_ids]
     board_pos = torch.tensor([board_default_pos], device=device).expand(num_resets, -1).clone()
     board_pos[:, 0] += torch.empty(num_resets, device=device).uniform_(*board_range.get("x", (0.0, 0.0)))
     board_pos[:, 1] += torch.empty(num_resets, device=device).uniform_(*board_range.get("y", (0.0, 0.0)))
     board_world_pos = board_pos + env_origins
+
+    yaw_lo, yaw_hi = board_range.get("yaw", (0.0, 0.0))
+    board_yaw_delta = torch.empty(num_resets, device=device).uniform_(yaw_lo, yaw_hi)
+    cached_board_rot = _cached_orientations[board_scene_name][env_ids].to(device)
+    board_rot = _quat_mul(_yaw_quat(board_yaw_delta), cached_board_rot)
 
     board_asset.write_root_pose_to_sim(torch.cat([board_world_pos, board_rot], dim=-1), env_ids=env_ids)
     board_asset.write_root_velocity_to_sim(torch.zeros(num_resets, 6, device=device), env_ids=env_ids)
     if sync_usd_xforms:
         _write_usd_xform_pose(stage, board_asset.cfg.prim_path, env_ids, env_origins, board_world_pos, board_rot)
 
+    # --- Parts: rigidly carried by the (now-rotated) board, plus optional per-part yaw jitter ---
+    cos_y = torch.cos(board_yaw_delta)
+    sin_y = torch.sin(board_yaw_delta)
+
     for part_cfg in parts:
         part_name = part_cfg["scene_name"]
         part_asset = env.scene[part_name]
-        part_rot = _cached_orientations[part_name][env_ids]
+        cached_part_rot = _cached_orientations[part_name][env_ids].to(device)
 
         offset_x, offset_y, offset_z = part_cfg["offset"]
         pose_range = part_cfg.get("pose_range", {})
         snap_step = part_cfg.get("snap_step", {})
 
-        part_pos = board_world_pos.clone()
+        local_x = torch.empty(num_resets, device=device)
+        local_y = torch.empty(num_resets, device=device)
+        part_yaw_jitter = torch.empty(num_resets, device=device)
         for idx in range(num_resets):
-            part_pos[idx, 0] += offset_x + _sample_axis(pose_range, snap_step, "x")
-            part_pos[idx, 1] += offset_y + _sample_axis(pose_range, snap_step, "y")
-            part_pos[idx, 2] = board_world_pos[idx, 2] + offset_z
+            local_x[idx] = offset_x + _sample_axis(pose_range, snap_step, "x")
+            local_y[idx] = offset_y + _sample_axis(pose_range, snap_step, "y")
+            part_yaw_jitter[idx] = _sample_axis(pose_range, snap_step, "yaw")
+
+        rotated_x = cos_y * local_x - sin_y * local_y
+        rotated_y = sin_y * local_x + cos_y * local_y
+
+        part_pos = torch.empty(num_resets, 3, device=device)
+        part_pos[:, 0] = board_world_pos[:, 0] + rotated_x
+        part_pos[:, 1] = board_world_pos[:, 1] + rotated_y
+        part_pos[:, 2] = board_world_pos[:, 2] + offset_z
+
+        part_rot = _quat_mul(_yaw_quat(board_yaw_delta + part_yaw_jitter), cached_part_rot)
 
         part_asset.write_root_pose_to_sim(torch.cat([part_pos, part_rot], dim=-1), env_ids=env_ids)
         part_asset.write_root_velocity_to_sim(torch.zeros(num_resets, 6, device=device), env_ids=env_ids)

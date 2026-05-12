@@ -240,6 +240,7 @@ class GripperStationarySuccess(ManagerTermBase):
     def __init__(self, cfg, env: ManagerBasedRLEnv):
         super().__init__(cfg, env)
         self._anchor_pos_w = torch.zeros((env.num_envs, 3), dtype=torch.float32, device=env.device)
+        self._anchor_quat_w = torch.zeros((env.num_envs, 4), dtype=torch.float32, device=env.device)
         self._stable_counts = torch.zeros(env.num_envs, dtype=torch.int32, device=env.device)
         self._initialized = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
 
@@ -247,6 +248,7 @@ class GripperStationarySuccess(ManagerTermBase):
         if env_ids is None:
             env_ids = slice(None)
         self._anchor_pos_w[env_ids] = 0.0
+        self._anchor_quat_w[env_ids] = 0.0
         self._stable_counts[env_ids] = 0
         self._initialized[env_ids] = False
 
@@ -256,21 +258,30 @@ class GripperStationarySuccess(ManagerTermBase):
         asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
         body_name: str = "gripper_tcp",
         movement_threshold: float = 0.01,
+        orientation_threshold: float = 0.01,
         required_seconds: float = 5.0,
     ) -> torch.Tensor:
         robot: Articulation = env.scene[asset_cfg.name]
         body_id = _first_body_id(robot, asset_cfg, body_name)
         body_pos_w = robot.data.body_pos_w[:, body_id, :]
+        body_quat_w = robot.data.body_quat_w[:, body_id]
 
         if self._anchor_pos_w.dtype != body_pos_w.dtype or self._anchor_pos_w.device != body_pos_w.device:
             self._anchor_pos_w = self._anchor_pos_w.to(dtype=body_pos_w.dtype, device=body_pos_w.device)
+            self._anchor_quat_w = self._anchor_quat_w.to(dtype=body_quat_w.dtype, device=body_quat_w.device)
 
         uninitialized = ~self._initialized
         self._anchor_pos_w = torch.where(uninitialized.unsqueeze(1), body_pos_w, self._anchor_pos_w)
+        self._anchor_quat_w = torch.where(uninitialized.unsqueeze(1), body_quat_w, self._anchor_quat_w)
         self._initialized = torch.ones_like(self._initialized)
 
-        moved_too_far = torch.linalg.norm(body_pos_w - self._anchor_pos_w, dim=1) > movement_threshold
+        position_moved = torch.linalg.norm(body_pos_w - self._anchor_pos_w, dim=1) > movement_threshold
+        orientation_error = quat_error_magnitude(body_quat_w, self._anchor_quat_w)
+        orientation_moved = orientation_error > orientation_threshold
+        moved_too_far = position_moved | orientation_moved
+
         self._anchor_pos_w = torch.where(moved_too_far.unsqueeze(1), body_pos_w, self._anchor_pos_w)
+        self._anchor_quat_w = torch.where(moved_too_far.unsqueeze(1), body_quat_w, self._anchor_quat_w)
 
         one_step = torch.ones_like(self._stable_counts)
         self._stable_counts = torch.where(moved_too_far, one_step, self._stable_counts + 1)

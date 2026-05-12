@@ -1,36 +1,43 @@
 #!/usr/bin/env python3
-"""Play a visual behavior-cloning policy trained by scripts/il/train.py."""
+"""Play an AIC robomimic BC checkpoint in Isaac Lab."""
 
 from __future__ import annotations
 
 import argparse
 import contextlib
+import json
+import random
 import time
 from pathlib import Path
+from typing import Any
 
 from isaaclab.app import AppLauncher
 
 
-parser = argparse.ArgumentParser(description="Run an IL visual BC checkpoint in an Isaac Lab task.")
+parser = argparse.ArgumentParser(description="Run an AIC robomimic checkpoint in an Isaac Lab task.")
 parser.add_argument("--task", type=str, default="AIC-Port-Insertion-v0", help="Name of the task.")
-parser.add_argument("--checkpoint", type=str, required=True, help="Path to best.pt/last.pt from scripts/il/train.py.")
+parser.add_argument("--checkpoint", type=str, required=True, help="Path to a robomimic .pth checkpoint.")
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments to simulate.")
 parser.add_argument("--max_steps", type=int, default=0, help="Maximum play steps. 0 = run until app closes.")
 parser.add_argument("--step_hz", type=int, default=30, help="Wall-clock loop rate. 0 = run as fast as possible.")
-parser.add_argument("--camera_names", nargs="+", default=None, help="Override checkpoint camera names.")
-parser.add_argument("--proprio_keys", nargs="+", default=None, help="Override checkpoint proprio keys.")
-parser.add_argument("--proprio_joint_count", type=int, default=0, help="Trim joint_pos/joint_vel to the first N values for live proprio. 0 = use checkpoint value if available.")
-parser.add_argument("--image_size", type=int, default=0, help="Override checkpoint image size. 0 = checkpoint value.")
-parser.add_argument("--action_clip", type=float, default=1.0, help="Clamp raw env actions to [-clip, clip]. <=0 disables.")
-parser.add_argument("--action_scale", type=float, default=1.0, help="Extra multiplier on denormalized actions.")
-parser.add_argument("--zero_rot", action="store_true", default=False, help="Zero rotational action components for debugging.")
+parser.add_argument("--action_clip", type=float, default=1.0, help="Clamp raw actions to [-clip, clip]. <=0 disables.")
+parser.add_argument("--action_scale", type=float, default=1.0, help="Extra raw-action multiplier for debugging.")
+parser.add_argument("--zero_rot", action="store_true", default=False, help="Zero rotational action components.")
 parser.add_argument("--stream", action="store_true", default=False, help="Attach browser camera stream.")
 parser.add_argument("--disable_fabric", action="store_true", default=False, help="Disable Fabric and use USD I/O.")
-parser.add_argument("--disable_randomization", action="store_true", default=False, help="Disable reset randomization events.")
-parser.add_argument("--disable_success_termination", action="store_true", default=False, help="Disable success termination while playing.")
-parser.add_argument("--tcp_body", type=str, default="gripper_tcp", help="TCP body name used for tcp_pose_w proprio.")
-parser.add_argument("--plug_center_body", type=str, default="sfp_module_link", help="Optional plug center body for legacy proprio.")
-parser.add_argument("--plug_tip_body", type=str, default="sfp_tip_link", help="Optional plug tip body for legacy proprio.")
+parser.add_argument(
+    "--disable_randomization",
+    action="store_true",
+    default=False,
+    help="Disable reset randomization events.",
+)
+parser.add_argument(
+    "--disable_success_termination",
+    action="store_true",
+    default=False,
+    help="Disable success termination.",
+)
+parser.add_argument("--seed", type=int, default=101)
 
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -40,9 +47,12 @@ app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
 
-"""Rest everything follows."""
+"""Everything below runs after Isaac Sim starts."""
 
 import gymnasium as gym
+import numpy as np
+import robomimic.utils.file_utils as FileUtils
+import robomimic.utils.torch_utils as TorchUtils
 import torch
 
 import isaaclab_tasks  # noqa: F401
@@ -50,12 +60,6 @@ from isaaclab_tasks.utils import parse_env_cfg
 
 import aic_task.tasks  # noqa: F401
 from aic_task.utils.live_camera_stream import attach_default_camera_stream
-
-from train import VisualBCPolicy, prepare_images
-
-
-DEFAULT_CAMERAS = ["left_camera", "center_camera", "right_camera"]
-DEFAULT_PROPRIO_KEYS = ["joint_pos", "joint_vel", "tcp_pose_w"]
 
 
 class RateLimiter:
@@ -80,6 +84,10 @@ def main() -> None:
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
+    ckpt_dict = torch_load_checkpoint(checkpoint_path)
+    obs_keys = checkpoint_obs_keys(ckpt_dict)
+    rgb_keys = checkpoint_rgb_keys(ckpt_dict)
+
     env_cfg = parse_env_cfg(
         args_cli.task,
         device=args_cli.device,
@@ -87,69 +95,60 @@ def main() -> None:
         use_fabric=not args_cli.disable_fabric,
     )
     env_cfg.env_name = args_cli.task.split(":")[-1]
+    env_cfg.observations.policy.concatenate_terms = False
+    env_cfg.recorders = None
+    env_cfg.image_obs_list = list(rgb_keys)
     if args_cli.disable_success_termination and hasattr(env_cfg.terminations, "success"):
         env_cfg.terminations.success = None
     if args_cli.disable_randomization:
-        _disable_randomization(env_cfg)
+        disable_randomization(env_cfg)
 
     env = gym.make(args_cli.task, cfg=env_cfg).unwrapped
     if args_cli.stream:
         attach_default_camera_stream(env)
 
-    device = torch.device(env.device)
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    config = checkpoint.get("config", {})
-    camera_names = list(args_cli.camera_names or config.get("camera_names", DEFAULT_CAMERAS))
-    proprio_keys = list(args_cli.proprio_keys or config.get("proprio_keys", DEFAULT_PROPRIO_KEYS))
-    args_cli.proprio_joint_count = int(
-        args_cli.proprio_joint_count or config.get("proprio_joint_count", 0)
-    )
-    image_size = int(args_cli.image_size or config.get("image_size", 128))
-
-    _validate_cameras(env, camera_names)
-    model = _load_model(checkpoint, config, camera_names, proprio_keys, device)
-    stats = _load_stats(checkpoint, device)
+    seed_everything(args_cli.seed, env)
+    device = TorchUtils.get_torch_device(try_to_use_cuda=(args_cli.device != "cpu"))
+    policy, _ = FileUtils.policy_from_checkpoint(ckpt_dict=ckpt_dict, device=device, verbose=True)
     rate_limiter = RateLimiter(args_cli.step_hz)
 
     env.sim.reset()
-    env.reset()
+    obs_dict, _ = env.reset()
+    policy.start_episode()
 
     print(f"[INFO] Playing checkpoint: {checkpoint_path}")
     print(f"[INFO] Task: {args_cli.task} | envs={env.num_envs} | device={device}")
-    print(f"[INFO] Cameras: {', '.join(camera_names)}")
-    print(f"[INFO] Proprio: {', '.join(proprio_keys)}")
-    print(f"[INFO] Image size: {image_size} | action_clip={args_cli.action_clip} | action_scale={args_cli.action_scale}")
-    if args_cli.stream:
-        print("[INFO] Camera stream attached.")
+    print(f"[INFO] Obs keys: {', '.join(obs_keys)}")
+    print(f"[INFO] RGB keys: {', '.join(rgb_keys)}")
+    print(f"[INFO] action_clip={args_cli.action_clip} action_scale={args_cli.action_scale}")
 
     step = 0
     try:
         with contextlib.suppress(KeyboardInterrupt), torch.inference_mode():
             while simulation_app.is_running():
-                image = _read_camera_batch(env, camera_names, device)
-                proprio = _read_proprio_batch(env, proprio_keys, device)
-
-                image = prepare_images(image, image_size, augment=False)
-                proprio = (proprio - stats["proprio_mean"]) / stats["proprio_std"]
-                normalized_action = model(image, proprio)["action"]
-                action = normalized_action * stats["action_std"] + stats["action_mean"]
-                action = action * args_cli.action_scale
-                if args_cli.zero_rot and action.shape[-1] >= 6:
-                    action[:, 3:6] = 0.0
+                actions = infer_actions(policy, obs_dict["policy"], obs_keys, rgb_keys, env.num_envs, env.device)
+                actions = actions * args_cli.action_scale
+                if args_cli.zero_rot and actions.shape[-1] >= 6:
+                    actions[:, 3:6] = 0.0
                 if args_cli.action_clip > 0.0:
-                    action = torch.clamp(action, -args_cli.action_clip, args_cli.action_clip)
+                    actions = torch.clamp(actions, -args_cli.action_clip, args_cli.action_clip)
+                if tuple(actions.shape) != tuple(env.action_space.shape):
+                    raise RuntimeError(
+                        f"Policy action shape {tuple(actions.shape)} != env action shape {env.action_space.shape}."
+                    )
 
-                if action.shape != env.action_space.shape:
-                    raise RuntimeError(f"Model action shape {tuple(action.shape)} != env action shape {env.action_space.shape}.")
-                env.step(action)
+                obs_dict, _, terminated, truncated, _ = env.step(actions)
 
                 if step % 30 == 0:
-                    action_norm = torch.linalg.norm(action, dim=1).mean()
+                    action_norm = torch.linalg.norm(actions, dim=1).mean()
                     print(f"[INFO] step={step:05d} action_norm={float(action_norm):.4f}")
 
                 step += 1
                 if args_cli.max_steps > 0 and step >= args_cli.max_steps:
                     break
+                if bool(torch.as_tensor(terminated).any()) or bool(torch.as_tensor(truncated).any()):
+                    obs_dict, _ = env.reset()
+                    policy.start_episode()
                 if env.sim.is_stopped():
                     break
                 rate_limiter.sleep(env)
@@ -157,104 +156,90 @@ def main() -> None:
         env.close()
 
 
-def _load_model(
-    checkpoint: dict,
-    config: dict,
-    camera_names: list[str],
-    proprio_keys: list[str],
-    device: torch.device,
-) -> VisualBCPolicy:
-    del proprio_keys
-    model = VisualBCPolicy(
-        image_channels=int(config.get("image_channels", len(camera_names) * 3)),
-        proprio_dim=int(config["proprio_dim"]),
-        action_dim=int(config["action_dim"]),
-        num_cameras=len(camera_names),
-        num_keypoints=int(config.get("num_keypoints", 0)),
-        phase_count=int(config.get("phase_count", 0)),
-    ).to(device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.eval()
-    return model
+def infer_actions(policy, policy_obs: dict[str, torch.Tensor], obs_keys, rgb_keys, num_envs: int, device: str):
+    """Run a robomimic RolloutPolicy for each env from Isaac Lab dict observations."""
+    actions = []
+    for env_id in range(num_envs):
+        obs = {}
+        for key in obs_keys:
+            if key not in policy_obs:
+                raise KeyError(f"Live env observation is missing checkpoint key '{key}'.")
+            value = policy_obs[key][env_id]
+            if key in rgb_keys:
+                value = prepare_rgb(value)
+            else:
+                value = value.detach().cpu().numpy().astype(np.float32, copy=False)
+            obs[key] = value
+        action = np.asarray(policy(obs), dtype=np.float32).reshape(-1)
+        if action.size < 6:
+            raise RuntimeError(f"Policy returned action of size {action.size}; expected at least 6.")
+        actions.append(torch.from_numpy(action[:6]))
+    return torch.stack(actions, dim=0).to(device=device, dtype=torch.float32)
 
 
-def _load_stats(checkpoint: dict, device: torch.device) -> dict[str, torch.Tensor]:
-    return {
-        "proprio_mean": checkpoint["proprio_mean"].to(device=device, dtype=torch.float32),
-        "proprio_std": checkpoint["proprio_std"].to(device=device, dtype=torch.float32).clamp_min(1.0e-6),
-        "action_mean": checkpoint["action_mean"].to(device=device, dtype=torch.float32),
-        "action_std": checkpoint["action_std"].to(device=device, dtype=torch.float32).clamp_min(1.0e-6),
-    }
+def prepare_rgb(value: torch.Tensor) -> np.ndarray:
+    """Convert Isaac Lab HWC uint8/float RGB to robomimic CHW float in [0, 1]."""
+    image = value.detach().cpu()
+    if image.ndim != 3 or image.shape[-1] < 3:
+        raise ValueError(f"Expected HWC RGB image, got shape {tuple(image.shape)}.")
+    image = image[..., :3]
+    if image.dtype == torch.uint8:
+        image = image.to(dtype=torch.float32) / 255.0
+    else:
+        image = image.to(dtype=torch.float32)
+        if float(image.max()) > 1.5:
+            image = image / 255.0
+    image = image.clamp(0.0, 1.0)
+    return image.permute(2, 0, 1).contiguous().numpy()
 
 
-def _read_camera_batch(env: gym.Env, camera_names: list[str], device: torch.device) -> torch.Tensor:
-    channels = []
-    for camera_name in camera_names:
-        camera = env.scene.sensors[camera_name]
-        rgb = camera.data.output["rgb"][..., :3].to(device)
-        if rgb.dtype == torch.uint8:
-            rgb = rgb.to(dtype=torch.float32) / 255.0
-        else:
-            rgb = rgb.to(dtype=torch.float32)
-            if float(rgb.max()) > 1.5:
-                rgb = rgb / 255.0
-        channels.append(rgb.permute(0, 3, 1, 2))
-    return torch.cat(channels, dim=1)
+def checkpoint_obs_keys(ckpt_dict: dict[str, Any]) -> tuple[str, ...]:
+    shape_meta = ckpt_dict.get("shape_metadata") or ckpt_dict.get("shape_meta") or {}
+    keys = shape_meta.get("all_obs_keys")
+    if keys:
+        return tuple(keys)
+    config = checkpoint_config_dict(ckpt_dict)
+    modalities = config.get("observation", {}).get("modalities", {}).get("obs", {})
+    return tuple(modalities.get("low_dim", []) + modalities.get("rgb", []))
 
 
-def _read_proprio_batch(env: gym.Env, proprio_keys: list[str], device: torch.device) -> torch.Tensor:
-    robot = env.scene["robot"]
-    values = []
-    for key in proprio_keys:
-        if key == "joint_pos":
-            value = robot.data.joint_pos.to(device)
-            if args_cli.proprio_joint_count > 0:
-                value = value[:, : args_cli.proprio_joint_count]
-            values.append(value)
-        elif key == "joint_vel":
-            value = robot.data.joint_vel.to(device)
-            if args_cli.proprio_joint_count > 0:
-                value = value[:, : args_cli.proprio_joint_count]
-            values.append(value)
-        elif key == "tcp_pose_w":
-            body_id = _first_body_id(robot, args_cli.tcp_body)
-            values.append(torch.cat((robot.data.body_pos_w[:, body_id], robot.data.body_quat_w[:, body_id]), dim=1).to(device))
-        elif key == "plug_center_pose_w":
-            body_id = _first_body_id(robot, args_cli.plug_center_body)
-            values.append(torch.cat((robot.data.body_pos_w[:, body_id], robot.data.body_quat_w[:, body_id]), dim=1).to(device))
-        elif key == "plug_tip_pose_w":
-            body_id = _first_body_id(robot, args_cli.plug_tip_body)
-            values.append(torch.cat((robot.data.body_pos_w[:, body_id], robot.data.body_quat_w[:, body_id]), dim=1).to(device))
-        elif key == "plug_axis_w":
-            center_id = _first_body_id(robot, args_cli.plug_center_body)
-            tip_id = _first_body_id(robot, args_cli.plug_tip_body)
-            axis = robot.data.body_pos_w[:, tip_id] - robot.data.body_pos_w[:, center_id]
-            axis = axis / torch.linalg.norm(axis, dim=1, keepdim=True).clamp_min(1.0e-9)
-            values.append(axis.to(device))
-        else:
-            raise KeyError(f"Unsupported proprio key '{key}' in checkpoint. Override with --proprio_keys if needed.")
-    return torch.cat(values, dim=1).to(dtype=torch.float32)
+def checkpoint_rgb_keys(ckpt_dict: dict[str, Any]) -> tuple[str, ...]:
+    config = checkpoint_config_dict(ckpt_dict)
+    modalities = config.get("observation", {}).get("modalities", {}).get("obs", {})
+    rgb = modalities.get("rgb", [])
+    if rgb:
+        return tuple(rgb)
+    shape_meta = ckpt_dict.get("shape_metadata") or ckpt_dict.get("shape_meta") or {}
+    all_shapes = shape_meta.get("all_shapes", {})
+    return tuple(key for key, shape in all_shapes.items() if len(tuple(shape)) == 3 and tuple(shape)[0] == 3)
 
 
-def _first_body_id(robot, body_name: str) -> int:
-    body_ids = robot.find_bodies(body_name, preserve_order=True)[0]
-    if len(body_ids) == 0:
-        available = ", ".join(getattr(robot, "body_names", []))
-        raise KeyError(f"Robot body '{body_name}' not found. Available robot bodies: {available}")
-    return int(body_ids[0])
+def checkpoint_config_dict(ckpt_dict: dict[str, Any]) -> dict[str, Any]:
+    raw = ckpt_dict.get("config", {})
+    if isinstance(raw, str):
+        return json.loads(raw)
+    return dict(raw)
 
 
-def _validate_cameras(env: gym.Env, camera_names: list[str]) -> None:
-    missing = [name for name in camera_names if name not in env.scene.sensors]
-    if missing:
-        available = ", ".join(env.scene.sensors.keys())
-        raise KeyError(f"Missing camera sensors {missing}. Available sensors: {available}")
+def torch_load_checkpoint(path: Path) -> dict[str, Any]:
+    try:
+        return torch.load(str(path), map_location="cpu", weights_only=False)
+    except TypeError:
+        return torch.load(str(path), map_location="cpu")
 
 
-def _disable_randomization(env_cfg) -> None:
+def disable_randomization(env_cfg) -> None:
     for name in ("randomize_light", "randomize_board_and_parts"):
         if hasattr(env_cfg.events, name):
             setattr(env_cfg.events, name, None)
+
+
+def seed_everything(seed: int, env) -> None:
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    if hasattr(env, "seed"):
+        env.seed(seed)
 
 
 if __name__ == "__main__":

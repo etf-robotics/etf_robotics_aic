@@ -24,7 +24,6 @@ from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
-from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 from isaaclab.sensors import TiledCameraCfg
 from isaaclab.devices import DevicesCfg
 from isaaclab.devices.keyboard import Se3KeyboardCfg
@@ -42,6 +41,15 @@ AIC_SCENE_DIR = AIC_ASSET_DIR
 AIC_PARTS_DIR = os.path.join(AIC_ASSET_DIR, "assets")
 
 EXTENSION_PATH = os.path.dirname(os.path.abspath(__file__))
+
+UR5E_ARM_JOINT_NAMES = [
+    "shoulder_pan_joint",
+    "shoulder_lift_joint",
+    "elbow_joint",
+    "wrist_1_joint",
+    "wrist_2_joint",
+    "wrist_3_joint",
+]
 
 ##
 # Scene definition
@@ -304,7 +312,7 @@ class EventCfg:
         func=mdp.reset_joints_by_offset,
         mode="reset",
         params={
-            "position_range": (-0.05, 0.05),
+            "position_range": (-0.3, 0.3),
             "velocity_range": (0.0, 0.0),
         },
     )
@@ -338,7 +346,11 @@ class EventCfg:
         params={
             "board_scene_name": "task_board",
             "board_default_pos": (0.2837, 0.229, 0.0),
-            "board_range": {"x": (-0.005, 0.005), "y": (-0.005, 0.005)},
+            "board_range": {
+                "x": (-0.025, 0.025),
+                "y": (-0.025, 0.025),
+                "yaw": (-0.262, 0.262),
+            },
             "parts": [
                 {
                     "scene_name": "sc_port",
@@ -366,94 +378,69 @@ class TerminationsCfg:
     """Termination terms for the MDP."""
 
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    success = DoneTerm(
-        func=mdp.cheat_sfp_module_above_nic_card_success,
-        params={
-            "asset_cfg": SceneEntityCfg("robot", body_names=["sfp_module_visual"]),
-            "nic_card_cfg": SceneEntityCfg("nic_card"),
-            "z_offset": 0.08,
-            "position_threshold": 0.05,
-        },
-    )
+    # The default AIC env does not enforce a generic SFP-above-NIC-card success.
+    # Task-specific envs should define their own success term.
+    success = None
 
 
 @configclass
 class ObservationsCfg:
-    """Observation specifications for the MDP: robot state, ee pose, pose command."""
+    """Observations matching the IsaacLabPolicy contract.
+
+    The keys, order and dtypes here must stay aligned with what
+    `aic_model.IsaacLabPolicy` consumes at inference time on the real robot.
+    """
 
     @configclass
     class PolicyCfg(ObsGroup):
-        """Observations for policy: joint state, ee pose, pose command."""
+        """Robot state + 3 raw RGB cameras + last action."""
 
-        # Robot state (joint space)
         joint_pos = ObsTerm(
-            func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01)
+            func=mdp.joint_pos_rel,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=UR5E_ARM_JOINT_NAMES)},
         )
         joint_vel = ObsTerm(
-            func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.01, n_max=0.01)
+            func=mdp.joint_vel,
+            params={"asset_cfg": SceneEntityCfg("robot", joint_names=UR5E_ARM_JOINT_NAMES)},
         )
-        # End-effector pose in env frame (pos xyz + quat wxyz = 7 dims)
         eef_pose = ObsTerm(
             func=mdp.body_pose_w,
-            params={"asset_cfg": SceneEntityCfg("robot", body_names="wrist_3_link")},
-            noise=Unoise(n_min=-0.001, n_max=0.001),
+            params={"asset_cfg": SceneEntityCfg("robot", body_names="gripper_tcp")},
         )
-        # Command (target ee pose)
-        pose_command = ObsTerm(
-            func=mdp.generated_commands, params={"command_name": "ee_pose"}
-        )
-
-        # Body forces
-        body_forces = ObsTerm(
+        wrist_wrench = ObsTerm(
             func=mdp.body_incoming_wrench,
-            scale=0.1,
-            params={
-                "asset_cfg": SceneEntityCfg(
-                    "robot",
-                    body_names=[
-                        "base_link",
-                        "shoulder_link",
-                        "upper_arm_link",
-                        "forearm_link",
-                        "wrist_1_link",
-                        "wrist_2_link",
-                        "wrist_3_link",
-                    ],
-                )
-            },
+            params={"asset_cfg": SceneEntityCfg("robot", body_names="wrist_3_link")},
         )
+        actions = ObsTerm(func=mdp.last_action)
 
         center_rgb = ObsTerm(
-            func=mdp.image_features,
+            func=mdp.image,
             params={
                 "sensor_cfg": SceneEntityCfg("center_camera"),
                 "data_type": "rgb",
-                "model_name": "resnet18",
+                "normalize": False,
             },
         )
         left_rgb = ObsTerm(
-            func=mdp.image_features,
+            func=mdp.image,
             params={
                 "sensor_cfg": SceneEntityCfg("left_camera"),
                 "data_type": "rgb",
-                "model_name": "resnet18",
+                "normalize": False,
             },
         )
         right_rgb = ObsTerm(
-            func=mdp.image_features,
+            func=mdp.image,
             params={
                 "sensor_cfg": SceneEntityCfg("right_camera"),
                 "data_type": "rgb",
-                "model_name": "resnet18",
+                "normalize": False,
             },
         )
 
-        # Last action
-        actions = ObsTerm(func=mdp.last_action)
-
         def __post_init__(self):
             self.enable_corruption = False
-            self.concatenate_terms = True
+            self.concatenate_terms = False
 
     # observation groups
     policy: PolicyCfg = PolicyCfg()
@@ -633,25 +620,20 @@ class AICTaskEnvCfg(ManagerBasedRLEnvCfg):
         #     asset_name="robot", joint_names=[".*"], scale=0.5, use_default_offset=True
         # )
 
-        # Arm action: differential IK (for teleoperation)
+        # Arm action: differential IK on gripper_tcp.
+        # Scale and IK params must mirror IsaacLabPolicy.py so a checkpoint
+        # trained here replays 1:1 through MotionUpdate on the real robot.
         self.actions.arm_action = DifferentialInverseKinematicsActionCfg(
             asset_name="robot",
-            joint_names=[
-                "shoulder_pan_joint",
-                "shoulder_lift_joint",
-                "elbow_joint",
-                "wrist_1_joint",
-                "wrist_2_joint",
-                "wrist_3_joint",
-            ],
+            joint_names=UR5E_ARM_JOINT_NAMES,
             body_name="gripper_tcp",
             controller=DifferentialIKControllerCfg(
                 command_type="pose",
                 use_relative_mode=True,
-                ik_method="svd",
-                ik_params={"k_val": 1.0, "min_singular_value": 1e-5},
+                ik_method="dls",
+                ik_params={"lambda_val": 0.05},
             ),
-            scale=0.05,
+            scale=(0.015, 0.015, 0.015, 0.025, 0.025, 0.025),
         )
 
         # Command generator: end-effector body and pitch (wrist_3_link, EE along x)

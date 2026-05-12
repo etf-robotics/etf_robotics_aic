@@ -1,5 +1,8 @@
 """HDF5 writer for visual port keypoint datasets."""
 
+
+"THE SCRIPT IS NOT USED, DO NOT LOOK AT THIS FOR NOW"
+
 from __future__ import annotations
 
 import json
