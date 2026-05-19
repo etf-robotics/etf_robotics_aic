@@ -32,7 +32,25 @@ parser.add_argument(
     "--insert_lateral_threshold",
     type=float,
     default=0.003,
-    help="Max world-XY lateral error before insertion depth is allowed to advance, meters.",
+    help="Max perpendicular error to the insertion line before insertion depth is allowed to advance, meters.",
+)
+parser.add_argument(
+    "--insert_orientation_threshold_deg",
+    type=float,
+    default=5.0,
+    help="Max tip orientation error before insertion depth is allowed to advance, degrees.",
+)
+parser.add_argument(
+    "--insert_misaligned_pos_scale",
+    type=float,
+    default=0.2,
+    help="Position command scale in INSERT while orientation is outside the threshold.",
+)
+parser.add_argument(
+    "--insert_alignment_only",
+    action="store_true",
+    default=False,
+    help="In INSERT, command only orientation and do not advance insertion depth.",
 )
 parser.add_argument("--final_threshold", type=float, default=0.003)
 parser.add_argument("--insert_speed", type=float, default=0.010, help="Target insertion speed in m/s.")
@@ -41,15 +59,6 @@ parser.add_argument("--rot_gain", type=float, default=0.5)
 parser.add_argument("--max_pos_delta", type=float, default=0.012)
 parser.add_argument("--insert_max_pos_delta", type=float, default=0.02)
 parser.add_argument("--max_rot_delta", type=float, default=2.5)
-parser.add_argument(
-    "--tip_frame_correction_x_deg",
-    type=float,
-    default=17.0,
-    help=(
-        "Calibration from raw sfp_tip_link to semantic insertion frame: "
-        "semantic = raw rotated by this many degrees about raw local +X."
-    ),
-)
 parser.add_argument("--hold_steps", type=int, default=60)
 parser.add_argument("--log_every", type=int, default=1, help="0 disables periodic logging.")
 parser.add_argument(
@@ -95,6 +104,7 @@ simulation_app = app_launcher.app
 
 import contextlib
 import importlib.util
+import math
 from pathlib import Path
 import sys
 import time
@@ -190,8 +200,13 @@ def main() -> None:
     print(f"[INFO] Action scale: {action_scale[0].detach().cpu().tolist()}")
     if not args_cli.disable_start_joint_reset:
         print(f"[INFO] start_joint_pos: {tuple(args_cli.start_joint_pos)}")
-    print("[INFO] fixed tip roll correction: 180.00 deg")
-    print(f"[INFO] tip_frame_correction_x_deg: {args_cli.tip_frame_correction_x_deg}")
+    print("[INFO] orientation mapping: tip +Y -> port -Z, tip +Z -> port -Y, tip +X -> port -X")
+    print(
+        "[INFO] insert orientation gate: "
+        f"{args_cli.insert_orientation_threshold_deg:.2f} deg, "
+        f"misaligned_pos_scale={args_cli.insert_misaligned_pos_scale:.3f}, "
+        f"alignment_only={args_cli.insert_alignment_only}"
+    )
     print(f"[INFO] approach_offset in sfp_port_0_link frame: {tuple(args_cli.approach_offset)}")
     print(f"[INFO] cached seat_pos_root[0]: {targets.seat_pos_root[0].detach().cpu().tolist()}")
     print(f"[INFO] live seat_w[0]: {world_targets.seat_w[0].detach().cpu().tolist()}")
@@ -211,9 +226,11 @@ def main() -> None:
                 max_rot_delta=args_cli.max_rot_delta,
                 approach_threshold=args_cli.approach_threshold,
                 insert_lateral_threshold=args_cli.insert_lateral_threshold,
+                insert_orientation_threshold=math.radians(args_cli.insert_orientation_threshold_deg),
+                insert_misaligned_pos_scale=args_cli.insert_misaligned_pos_scale,
+                insert_alignment_only=args_cli.insert_alignment_only,
                 final_threshold=args_cli.final_threshold,
                 insert_speed=args_cli.insert_speed,
-                tip_frame_correction_x_deg=args_cli.tip_frame_correction_x_deg,
                 step_dt=_env_step_dt(env),
                 hold_orientation=not args_cli.disable_orientation_hold,
             )
@@ -229,6 +246,8 @@ def main() -> None:
                         f" path_line_err={float(output.path_lateral_error[0]):.4f} m"
                         f" path_xy_err={float(output.lateral_xy_error[0]):.4f} m"
                         f" abs_xy=({float(xy_abs[0]):.4f}, {float(xy_abs[1]):.4f})"
+                        f" ori_err={math.degrees(float(output.orientation_error[0])):.2f} deg"
+                        f" pos_scale={float(output.position_scale[0]):.2f}"
                         f" cmd_pos_b={_fmt_vec(output.processed_action[0, :3])}"
                         f" cmd_rot_b={float(torch.linalg.norm(output.processed_action[0, 3:6])):.4f}"
                     )

@@ -75,6 +75,8 @@ class SimpleNicInsertOracleOutput:
     tip_error: torch.Tensor
     lateral_xy_error: torch.Tensor
     path_lateral_error: torch.Tensor
+    orientation_error: torch.Tensor
+    position_scale: torch.Tensor
     phase: torch.Tensor
     insert_fraction: torch.Tensor
 
@@ -204,9 +206,11 @@ def compute_simple_nic_insert_oracle(
     max_rot_delta: float = 0.025,
     approach_threshold: float = 0.015,
     insert_lateral_threshold: float = 0.003,
+    insert_orientation_threshold: float = math.radians(5.0),
+    insert_misaligned_pos_scale: float = 0.2,
+    insert_alignment_only: bool = False,
     final_threshold: float = 0.003,
     insert_speed: float = 0.010,
-    tip_frame_correction_x_deg: float = 17.0,
     step_dt: float = 1.0 / 30.0,
     hold_orientation: bool = True,
 ) -> SimpleNicInsertOracleOutput:
@@ -228,6 +232,14 @@ def compute_simple_nic_insert_oracle(
     state.tip_quat_tcp[:] = tip_quat_tcp
     world_targets = compute_simple_nic_insert_world_targets(env, targets)
 
+    if hold_orientation:
+        desired_tip_quat_w = _desired_tip_quat_from_port(world_targets.seat_quat_w)
+        desired_tcp_quat_w = _desired_tcp_quat_from_tip(desired_tip_quat_w, tip_quat_tcp)
+        orientation_error = math_utils.quat_error_magnitude(tip_quat_w, desired_tip_quat_w)
+    else:
+        desired_tcp_quat_w = tcp_quat_w
+        orientation_error = torch.zeros((env.num_envs,), dtype=tcp_pos_w.dtype, device=tcp_pos_w.device)
+
     insert_fraction, target_tip_pos_w = _current_target_tip_pos(world_targets, state)
     tip_error = torch.linalg.norm(target_tip_pos_w - tip_pos_w, dim=1)
     lateral_xy_error = _world_xy_error(tip_pos_w, target_tip_pos_w)
@@ -236,7 +248,10 @@ def compute_simple_nic_insert_oracle(
     state.phase[reached_approach] = int(SimpleNicInsertPhase.INSERT)
 
     insert_mask = state.phase == int(SimpleNicInsertPhase.INSERT)
-    advance_mask = insert_mask & (path_lateral_error <= insert_lateral_threshold)
+    aligned_mask = orientation_error <= insert_orientation_threshold
+    advance_mask = insert_mask & (path_lateral_error <= insert_lateral_threshold) & aligned_mask
+    if insert_alignment_only:
+        advance_mask[:] = False
     state.insert_distance[advance_mask] += insert_speed * step_dt
     state.insert_distance[:] = torch.minimum(state.insert_distance, world_targets.path_length)
 
@@ -253,15 +268,6 @@ def compute_simple_nic_insert_oracle(
     state.phase[reached_final] = int(SimpleNicInsertPhase.HOLD)
     state.hold_steps[state.phase == int(SimpleNicInsertPhase.HOLD)] += 1
 
-    if hold_orientation:
-        desired_semantic_tip_quat_w = _desired_tip_quat_from_port(world_targets.seat_quat_w)
-        desired_tip_quat_w = _raw_tip_quat_from_semantic(
-            desired_semantic_tip_quat_w,
-            tip_frame_correction_x_deg,
-        )
-        desired_tcp_quat_w = _desired_tcp_quat_from_tip(desired_tip_quat_w, tip_quat_tcp)
-    else:
-        desired_tcp_quat_w = tcp_quat_w
     desired_tcp_pos_w = target_tip_pos_w - math_utils.quat_apply(desired_tcp_quat_w, tip_pos_tcp)
     processed_action = _relative_ik_processed_action(
         robot,
@@ -275,6 +281,15 @@ def compute_simple_nic_insert_oracle(
         max_pos_delta=insert_max_pos_delta if bool(insert_mask.any()) else max_pos_delta,
         max_rot_delta=max_rot_delta,
     )
+    position_scale = torch.ones((env.num_envs,), dtype=processed_action.dtype, device=processed_action.device)
+    if hold_orientation:
+        insert_action_mask = state.phase == int(SimpleNicInsertPhase.INSERT)
+        if insert_alignment_only:
+            position_scale[insert_action_mask] = 0.0
+        else:
+            misaligned_insert_mask = insert_action_mask & ~aligned_mask
+            position_scale[misaligned_insert_mask] = max(0.0, min(1.0, insert_misaligned_pos_scale))
+        processed_action[:, 0:3] *= position_scale.unsqueeze(1)
     raw_action = processed_action / torch.clamp(action_scale, min=1.0e-9)
     return SimpleNicInsertOracleOutput(
         raw_action=raw_action,
@@ -284,6 +299,8 @@ def compute_simple_nic_insert_oracle(
         tip_error=tip_error,
         lateral_xy_error=lateral_xy_error,
         path_lateral_error=path_lateral_error,
+        orientation_error=orientation_error,
+        position_scale=position_scale,
         phase=state.phase.clone(),
         insert_fraction=insert_fraction.squeeze(1),
     )
@@ -328,33 +345,6 @@ def _project_tip_to_path(
 
 def _desired_tcp_quat_from_tip(desired_tip_quat_w: torch.Tensor, tip_quat_tcp: torch.Tensor) -> torch.Tensor:
     return math_utils.quat_mul(desired_tip_quat_w, math_utils.quat_inv(tip_quat_tcp))
-
-
-def _raw_tip_quat_from_semantic(
-    desired_semantic_tip_quat_w: torch.Tensor,
-    tip_frame_correction_x_deg: float,
-) -> torch.Tensor:
-    """Convert desired calibrated tip-frame orientation to raw sfp_tip_link orientation.
-
-    The calibrated semantic frame is defined as the raw ``sfp_tip_link`` frame
-    rotated by ``tip_frame_correction_x_deg`` about raw local +X.
-    """
-    if abs(tip_frame_correction_x_deg) <= 1.0e-9:
-        return desired_semantic_tip_quat_w
-    angles = torch.full(
-        (desired_semantic_tip_quat_w.shape[0],),
-        math.radians(tip_frame_correction_x_deg),
-        dtype=desired_semantic_tip_quat_w.dtype,
-        device=desired_semantic_tip_quat_w.device,
-    )
-    x_axis = torch.zeros(
-        (desired_semantic_tip_quat_w.shape[0], 3),
-        dtype=desired_semantic_tip_quat_w.dtype,
-        device=desired_semantic_tip_quat_w.device,
-    )
-    x_axis[:, 0] = 1.0
-    q_raw_to_semantic = math_utils.quat_from_angle_axis(angles, x_axis)
-    return math_utils.quat_mul(desired_semantic_tip_quat_w, math_utils.quat_inv(q_raw_to_semantic))
 
 
 def _seat_pose_in_asset_root(
@@ -443,52 +433,30 @@ def _relative_ik_processed_action(
 
 
 def _desired_tip_quat_from_port(port_quat_w: torch.Tensor) -> torch.Tensor:
-    """Return a tip orientation where tip local -Z follows port local +Y."""
+    """Return the raw SFP tip orientation for insertion into the NIC port.
+
+    Confirmed frame mapping:
+    - tip local +Y aligns with port local -Z
+    - tip local +Z aligns with port local -Y
+
+    These two constraints define the right-handed tip frame.  They imply tip
+    local +X aligns with port local -X.
+    """
     port_y = _local_axis_w(port_quat_w, (0.0, 1.0, 0.0))
     port_z = _local_axis_w(port_quat_w, (0.0, 0.0, 1.0))
 
-    # Tip local -Z is the observed module insertion direction, so tip +Z must
-    # point opposite the port insertion axis.
+    target_y = -port_z
     target_z = -port_y
-    target_y = _project_axis_onto_plane(port_z, target_z)
     target_x = torch.linalg.cross(target_y, target_z, dim=1)
     target_x = torch.nn.functional.normalize(target_x, dim=1)
     target_y = torch.linalg.cross(target_z, target_x, dim=1)
     target_y = torch.nn.functional.normalize(target_y, dim=1)
-
-    # Empirically this tip frame needs a 180 degree roll about the insertion
-    # axis after aligning -Z to the port axis.  This is the fixed correction
-    # that was previously exposed as --tip_roll_offset_deg 180.
-    angles = torch.full((port_quat_w.shape[0],), math.pi, dtype=port_quat_w.dtype, device=port_quat_w.device)
-    q_roll = math_utils.quat_from_angle_axis(angles, port_y)
-    target_x = math_utils.quat_apply(q_roll, target_x)
-    target_y = math_utils.quat_apply(q_roll, target_y)
-    target_z = math_utils.quat_apply(q_roll, target_z)
-
     return _quat_from_frame_axes(target_x, target_y, target_z)
 
 
 def _local_axis_w(quat_w: torch.Tensor, axis_local: tuple[float, float, float]) -> torch.Tensor:
     axis = torch.tensor(axis_local, dtype=quat_w.dtype, device=quat_w.device).unsqueeze(0)
     return math_utils.quat_apply(quat_w, axis.expand(quat_w.shape[0], -1))
-
-
-def _project_axis_onto_plane(axis: torch.Tensor, plane_normal: torch.Tensor) -> torch.Tensor:
-    plane_normal = torch.nn.functional.normalize(plane_normal, dim=1)
-    projected = axis - torch.sum(axis * plane_normal, dim=1, keepdim=True) * plane_normal
-    norm = torch.linalg.norm(projected, dim=1, keepdim=True)
-    fallback_axis = _orthogonal_axis(plane_normal)
-    return torch.where(norm > 1.0e-6, projected / norm.clamp_min(1.0e-9), fallback_axis)
-
-
-def _orthogonal_axis(vector: torch.Tensor) -> torch.Tensor:
-    x_axis = torch.zeros_like(vector)
-    x_axis[:, 0] = 1.0
-    y_axis = torch.zeros_like(vector)
-    y_axis[:, 1] = 1.0
-    candidate = torch.where(torch.abs(vector[:, 0:1]) < 0.9, x_axis, y_axis)
-    axis = torch.linalg.cross(vector, candidate, dim=1)
-    return torch.nn.functional.normalize(axis, dim=1)
 
 
 def _quat_from_frame_axes(x_axis: torch.Tensor, y_axis: torch.Tensor, z_axis: torch.Tensor) -> torch.Tensor:
