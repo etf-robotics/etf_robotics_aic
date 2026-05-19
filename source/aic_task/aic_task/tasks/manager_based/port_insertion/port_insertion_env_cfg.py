@@ -110,6 +110,8 @@ class PortInsertionEnvCfg(AICTaskEnvCfg):
         self.episode_length_s = 120.0
 
         arm_actuator = self.scene.robot.actuators["arm"]
-        arm_actuator.effort_limit_sim = 110.0
-        arm_actuator.stiffness = 2600.0
-        arm_actuator.damping = 130.0
+        # Demo/debug insertion needs extra authority because the cable and plug
+        # contacts can otherwise overpower the relative IK command.
+        arm_actuator.effort_limit_sim = 300.0
+        arm_actuator.stiffness = 6000.0
+        arm_actuator.damping = 300.0

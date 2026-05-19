@@ -27,18 +27,50 @@ parser.add_argument(
         "Default is 10 cm along -Y because insertion is port-local +Y."
     ),
 )
-parser.add_argument("--approach_threshold", type=float, default=0.006)
+parser.add_argument("--approach_threshold", type=float, default=0.015)
+parser.add_argument(
+    "--insert_lateral_threshold",
+    type=float,
+    default=0.003,
+    help="Max world-XY lateral error before insertion depth is allowed to advance, meters.",
+)
 parser.add_argument("--final_threshold", type=float, default=0.003)
 parser.add_argument("--insert_speed", type=float, default=0.010, help="Target insertion speed in m/s.")
 parser.add_argument("--pos_gain", type=float, default=0.8)
 parser.add_argument("--rot_gain", type=float, default=0.5)
 parser.add_argument("--max_pos_delta", type=float, default=0.012)
-parser.add_argument("--insert_max_pos_delta", type=float, default=0.002)
-parser.add_argument("--max_rot_delta", type=float, default=0.025)
+parser.add_argument("--insert_max_pos_delta", type=float, default=0.02)
+parser.add_argument("--max_rot_delta", type=float, default=2.5)
 parser.add_argument("--hold_steps", type=int, default=60)
-parser.add_argument("--log_every", type=int, default=25, help="0 disables periodic logging.")
+parser.add_argument("--log_every", type=int, default=1, help="0 disables periodic logging.")
+parser.add_argument(
+    "--log_path_xy_error",
+    action="store_true",
+    default=False,
+    help="Log world-XY lateral error to the current insertion path target, ignoring Z.",
+)
 parser.add_argument("--stream", action="store_true", default=False)
 parser.add_argument("--disable_orientation_hold", action="store_true", default=False)
+parser.add_argument(
+    "--start_joint_pos",
+    type=float,
+    nargs=6,
+    default=(0.45, -1.3542, -1.6648, -1.6933, 1.5710, 1.4110),
+    metavar=("SHOULDER_PAN", "SHOULDER_LIFT", "ELBOW", "WRIST_1", "WRIST_2", "WRIST_3"),
+    help="Deterministic UR5e start joints in radians, applied after env.reset().",
+)
+parser.add_argument(
+    "--disable_start_joint_reset",
+    action="store_true",
+    default=False,
+    help="Do not force the deterministic start joints after env.reset().",
+)
+parser.add_argument(
+    "--start_settle_steps",
+    type=int,
+    default=20,
+    help="Zero-action settle steps after applying --start_joint_pos.",
+)
 parser.set_defaults(use_fabric=True)
 parser.add_argument("--disable_fabric", action="store_false", dest="use_fabric")
 
@@ -134,17 +166,26 @@ def main() -> None:
 
     env.sim.reset()
     env.reset()
+    if not args_cli.disable_start_joint_reset:
+        _apply_start_joint_pose(env, tuple(args_cli.start_joint_pos))
+        _settle_start_pose(env, rate_limiter, args_cli.start_settle_steps)
+
     targets = oracle.make_simple_nic_insert_targets(
         env,
         approach_offset_local=tuple(args_cli.approach_offset),
     )
+    world_targets = oracle.compute_simple_nic_insert_world_targets(env, targets)
     state = oracle.make_simple_nic_insert_state(env)
 
     print(f"[INFO] Running simple NIC insert oracle on {args_cli.task}")
     print(f"[INFO] Action scale: {action_scale[0].detach().cpu().tolist()}")
+    if not args_cli.disable_start_joint_reset:
+        print(f"[INFO] start_joint_pos: {tuple(args_cli.start_joint_pos)}")
+    print("[INFO] fixed tip roll correction: 180.00 deg")
     print(f"[INFO] approach_offset in sfp_port_0_link frame: {tuple(args_cli.approach_offset)}")
-    print(f"[INFO] seat_w[0]: {targets.seat_w[0].detach().cpu().tolist()}")
-    print(f"[INFO] approach_w[0]: {targets.approach_w[0].detach().cpu().tolist()}")
+    print(f"[INFO] cached seat_pos_root[0]: {targets.seat_pos_root[0].detach().cpu().tolist()}")
+    print(f"[INFO] live seat_w[0]: {world_targets.seat_w[0].detach().cpu().tolist()}")
+    print(f"[INFO] live approach_w[0]: {world_targets.approach_w[0].detach().cpu().tolist()}")
 
     with contextlib.suppress(KeyboardInterrupt), torch.inference_mode():
         for step in range(args_cli.max_episode_steps):
@@ -159,6 +200,7 @@ def main() -> None:
                 insert_max_pos_delta=args_cli.insert_max_pos_delta,
                 max_rot_delta=args_cli.max_rot_delta,
                 approach_threshold=args_cli.approach_threshold,
+                insert_lateral_threshold=args_cli.insert_lateral_threshold,
                 final_threshold=args_cli.final_threshold,
                 insert_speed=args_cli.insert_speed,
                 step_dt=_env_step_dt(env),
@@ -168,11 +210,20 @@ def main() -> None:
 
             if args_cli.log_every > 0 and step % args_cli.log_every == 0:
                 phase = oracle.SimpleNicInsertPhase(int(output.phase[0])).name
+                path_xy_msg = ""
+                if args_cli.log_path_xy_error:
+                    xy_delta = output.tip_pos_w[0, :2] - output.target_tip_pos_w[0, :2]
+                    xy_abs = torch.abs(xy_delta)
+                    path_xy_msg = (
+                        f" path_xy_err={float(output.lateral_xy_error[0]):.4f} m"
+                        f" abs_xy=({float(xy_abs[0]):.4f}, {float(xy_abs[1]):.4f})"
+                    )
                 print(
                     f"[INFO] step={step:04d} phase={phase} "
                     f"tip_err={float(output.tip_error[0]):.4f} m "
                     f"insert={float(output.insert_fraction[0]) * 100.0:5.1f}% "
                     f"|a|={float(torch.linalg.norm(output.raw_action[0])):.3f}"
+                    f"{path_xy_msg}"
                 )
 
             hold_done = (
@@ -209,6 +260,34 @@ def _disable_terminations(env_cfg) -> None:
         if name.startswith("_") or value is None:
             continue
         setattr(env_cfg.terminations, name, None)
+
+
+def _apply_start_joint_pose(env: gym.Env, joint_pos: tuple[float, float, float, float, float, float]) -> None:
+    robot = env.scene["robot"]
+    joint_names = (
+        "shoulder_pan_joint",
+        "shoulder_lift_joint",
+        "elbow_joint",
+        "wrist_1_joint",
+        "wrist_2_joint",
+        "wrist_3_joint",
+    )
+    available = list(getattr(robot, "joint_names", []))
+    joint_ids = [available.index(name) for name in joint_names]
+    positions = torch.tensor(joint_pos, dtype=robot.data.joint_pos.dtype, device=env.device).unsqueeze(0)
+    positions = positions.expand(env.num_envs, -1).contiguous()
+    velocities = torch.zeros_like(positions)
+    robot.write_joint_state_to_sim(positions, velocities, joint_ids=joint_ids)
+    robot.set_joint_position_target(positions, joint_ids=joint_ids)
+
+
+def _settle_start_pose(env: gym.Env, rate_limiter: RateLimiter, steps: int) -> None:
+    action = torch.zeros(env.action_space.shape, dtype=torch.float32, device=env.device)
+    for _ in range(max(0, steps)):
+        env.step(action)
+        if env.sim.is_stopped():
+            break
+        rate_limiter.sleep(env)
 
 
 if __name__ == "__main__":

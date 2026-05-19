@@ -306,8 +306,9 @@ class ActionsCfg:
 
 @configclass
 class EventCfg:
+    pass
     """Configuration for events."""
-
+'''
     reset_robot_joints = EventTerm(
         func=mdp.reset_joints_by_offset,
         mode="reset",
@@ -371,7 +372,7 @@ class EventCfg:
             ],
         },
     )
-
+'''
 
 @configclass
 class TerminationsCfg:
@@ -620,13 +621,13 @@ class AICTaskEnvCfg(ManagerBasedRLEnvCfg):
         #     asset_name="robot", joint_names=[".*"], scale=0.5, use_default_offset=True
         # )
 
-        # Arm action: differential IK on gripper_tcp.
+        # Arm action: differential IK on the SFP tip frame.
         # Scale and IK params must mirror IsaacLabPolicy.py so a checkpoint
         # trained here replays 1:1 through MotionUpdate on the real robot.
         self.actions.arm_action = DifferentialInverseKinematicsActionCfg(
             asset_name="robot",
             joint_names=UR5E_ARM_JOINT_NAMES,
-            body_name="gripper_tcp",
+            body_name="sfp_tip_link",
             controller=DifferentialIKControllerCfg(
                 command_type="pose",
                 use_relative_mode=True,
@@ -636,8 +637,8 @@ class AICTaskEnvCfg(ManagerBasedRLEnvCfg):
             scale=(0.015, 0.015, 0.015, 0.025, 0.025, 0.025),
         )
 
-        # Command generator: end-effector body and pitch (wrist_3_link, EE along x)
-        self.commands.ee_pose.body_name = "gripper_tcp"
+        # Command generator debug target: use the same body as the DiffIK action.
+        self.commands.ee_pose.body_name = "sfp_tip_link"
         self.commands.ee_pose.ranges.pitch = (math.pi / 2, math.pi / 2)
 
         # Teleop device configuration
