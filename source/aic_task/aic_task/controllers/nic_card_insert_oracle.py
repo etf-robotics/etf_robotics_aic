@@ -206,6 +206,7 @@ def compute_simple_nic_insert_oracle(
     insert_lateral_threshold: float = 0.003,
     final_threshold: float = 0.003,
     insert_speed: float = 0.010,
+    tip_frame_correction_x_deg: float = 17.0,
     step_dt: float = 1.0 / 30.0,
     hold_orientation: bool = True,
 ) -> SimpleNicInsertOracleOutput:
@@ -216,6 +217,15 @@ def compute_simple_nic_insert_oracle(
     tcp_pos_w = robot.data.body_pos_w[:, tcp_id, :]
     tcp_quat_w = robot.data.body_quat_w[:, tcp_id, :]
     tip_pos_w = robot.data.body_pos_w[:, tip_id, :]
+    tip_quat_w = robot.data.body_quat_w[:, tip_id, :]
+    tip_pos_tcp, tip_quat_tcp = math_utils.subtract_frame_transforms(
+        tcp_pos_w,
+        tcp_quat_w,
+        tip_pos_w,
+        tip_quat_w,
+    )
+    state.tip_pos_tcp[:] = tip_pos_tcp
+    state.tip_quat_tcp[:] = tip_quat_tcp
     world_targets = compute_simple_nic_insert_world_targets(env, targets)
 
     insert_fraction, target_tip_pos_w = _current_target_tip_pos(world_targets, state)
@@ -243,13 +253,16 @@ def compute_simple_nic_insert_oracle(
     state.phase[reached_final] = int(SimpleNicInsertPhase.HOLD)
     state.hold_steps[state.phase == int(SimpleNicInsertPhase.HOLD)] += 1
 
-    desired_tip_quat_w = (
-        _desired_tip_quat_from_port(world_targets.seat_quat_w)
-        if hold_orientation
-        else math_utils.quat_mul(tcp_quat_w, state.tip_quat_tcp)
-    )
-    desired_tcp_quat_w = _desired_tcp_quat_from_tip(desired_tip_quat_w, state.tip_quat_tcp)
-    desired_tcp_pos_w = target_tip_pos_w - math_utils.quat_apply(desired_tcp_quat_w, state.tip_pos_tcp)
+    if hold_orientation:
+        desired_semantic_tip_quat_w = _desired_tip_quat_from_port(world_targets.seat_quat_w)
+        desired_tip_quat_w = _raw_tip_quat_from_semantic(
+            desired_semantic_tip_quat_w,
+            tip_frame_correction_x_deg,
+        )
+        desired_tcp_quat_w = _desired_tcp_quat_from_tip(desired_tip_quat_w, tip_quat_tcp)
+    else:
+        desired_tcp_quat_w = tcp_quat_w
+    desired_tcp_pos_w = target_tip_pos_w - math_utils.quat_apply(desired_tcp_quat_w, tip_pos_tcp)
     processed_action = _relative_ik_processed_action(
         robot,
         tcp_pos_w,
@@ -315,6 +328,33 @@ def _project_tip_to_path(
 
 def _desired_tcp_quat_from_tip(desired_tip_quat_w: torch.Tensor, tip_quat_tcp: torch.Tensor) -> torch.Tensor:
     return math_utils.quat_mul(desired_tip_quat_w, math_utils.quat_inv(tip_quat_tcp))
+
+
+def _raw_tip_quat_from_semantic(
+    desired_semantic_tip_quat_w: torch.Tensor,
+    tip_frame_correction_x_deg: float,
+) -> torch.Tensor:
+    """Convert desired calibrated tip-frame orientation to raw sfp_tip_link orientation.
+
+    The calibrated semantic frame is defined as the raw ``sfp_tip_link`` frame
+    rotated by ``tip_frame_correction_x_deg`` about raw local +X.
+    """
+    if abs(tip_frame_correction_x_deg) <= 1.0e-9:
+        return desired_semantic_tip_quat_w
+    angles = torch.full(
+        (desired_semantic_tip_quat_w.shape[0],),
+        math.radians(tip_frame_correction_x_deg),
+        dtype=desired_semantic_tip_quat_w.dtype,
+        device=desired_semantic_tip_quat_w.device,
+    )
+    x_axis = torch.zeros(
+        (desired_semantic_tip_quat_w.shape[0], 3),
+        dtype=desired_semantic_tip_quat_w.dtype,
+        device=desired_semantic_tip_quat_w.device,
+    )
+    x_axis[:, 0] = 1.0
+    q_raw_to_semantic = math_utils.quat_from_angle_axis(angles, x_axis)
+    return math_utils.quat_mul(desired_semantic_tip_quat_w, math_utils.quat_inv(q_raw_to_semantic))
 
 
 def _seat_pose_in_asset_root(
