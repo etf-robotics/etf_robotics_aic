@@ -73,6 +73,7 @@ class SimpleNicInsertOracleOutput:
     tip_pos_w: torch.Tensor
     tip_error: torch.Tensor
     lateral_xy_error: torch.Tensor
+    path_lateral_error: torch.Tensor
     phase: torch.Tensor
     insert_fraction: torch.Tensor
 
@@ -218,17 +219,21 @@ def compute_simple_nic_insert_oracle(
     insert_fraction, target_tip_pos_w = _current_target_tip_pos(world_targets, state)
     tip_error = torch.linalg.norm(target_tip_pos_w - tip_pos_w, dim=1)
     lateral_xy_error = _world_xy_error(tip_pos_w, target_tip_pos_w)
+    path_distance, _, path_lateral_error = _project_tip_to_path(world_targets, tip_pos_w)
     reached_approach = (state.phase == int(SimpleNicInsertPhase.APPROACH)) & (tip_error <= approach_threshold)
     state.phase[reached_approach] = int(SimpleNicInsertPhase.INSERT)
 
     insert_mask = state.phase == int(SimpleNicInsertPhase.INSERT)
-    advance_mask = insert_mask & (lateral_xy_error <= insert_lateral_threshold)
+    align_mask = insert_mask & (path_lateral_error > insert_lateral_threshold)
+    state.insert_distance[align_mask] = torch.maximum(state.insert_distance[align_mask], path_distance[align_mask])
+    advance_mask = insert_mask & (path_lateral_error <= insert_lateral_threshold)
     state.insert_distance[advance_mask] += insert_speed * step_dt
     state.insert_distance[:] = torch.minimum(state.insert_distance, world_targets.path_length)
 
     insert_fraction, target_tip_pos_w = _current_target_tip_pos(world_targets, state)
     tip_error = torch.linalg.norm(target_tip_pos_w - tip_pos_w, dim=1)
     lateral_xy_error = _world_xy_error(tip_pos_w, target_tip_pos_w)
+    _, _, path_lateral_error = _project_tip_to_path(world_targets, tip_pos_w)
 
     reached_final = (
         (state.phase == int(SimpleNicInsertPhase.INSERT))
@@ -264,6 +269,7 @@ def compute_simple_nic_insert_oracle(
         tip_pos_w=tip_pos_w,
         tip_error=tip_error,
         lateral_xy_error=lateral_xy_error,
+        path_lateral_error=path_lateral_error,
         phase=state.phase.clone(),
         insert_fraction=insert_fraction.squeeze(1),
     )
@@ -290,6 +296,20 @@ def _current_target_tip_pos(
 
 def _world_xy_error(actual_w: torch.Tensor, target_w: torch.Tensor) -> torch.Tensor:
     return torch.linalg.norm(actual_w[:, :2] - target_w[:, :2], dim=1)
+
+
+def _project_tip_to_path(
+    world_targets: SimpleNicInsertWorldTargets,
+    tip_pos_w: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    path_axis_w = world_targets.path_w / world_targets.path_length
+    tip_from_approach = tip_pos_w - world_targets.approach_w
+    path_distance = torch.sum(tip_from_approach * path_axis_w, dim=1, keepdim=True)
+    path_distance = torch.clamp(path_distance, min=0.0)
+    path_distance = torch.minimum(path_distance, world_targets.path_length)
+    closest_w = world_targets.approach_w + path_axis_w * path_distance
+    path_lateral_error = torch.linalg.norm(tip_pos_w - closest_w, dim=1)
+    return path_distance, closest_w, path_lateral_error
 
 
 def _seat_pose_in_asset_root(

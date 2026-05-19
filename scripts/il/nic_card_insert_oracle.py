@@ -215,8 +215,11 @@ def main() -> None:
                     xy_delta = output.tip_pos_w[0, :2] - output.target_tip_pos_w[0, :2]
                     xy_abs = torch.abs(xy_delta)
                     path_xy_msg = (
+                        f" path_line_err={float(output.path_lateral_error[0]):.4f} m"
                         f" path_xy_err={float(output.lateral_xy_error[0]):.4f} m"
                         f" abs_xy=({float(xy_abs[0]):.4f}, {float(xy_abs[1]):.4f})"
+                        f" cmd_pos_b={_fmt_vec(output.processed_action[0, :3])}"
+                        f" cmd_rot_b={float(torch.linalg.norm(output.processed_action[0, 3:6])):.4f}"
                     )
                 print(
                     f"[INFO] step={step:04d} phase={phase} "
@@ -288,6 +291,11 @@ def _settle_start_pose(env: gym.Env, rate_limiter: RateLimiter, steps: int) -> N
         if env.sim.is_stopped():
             break
         rate_limiter.sleep(env)
+
+
+def _fmt_vec(values: torch.Tensor) -> str:
+    values_cpu = values.detach().cpu()
+    return "(" + ", ".join(f"{float(value):+.4f}" for value in values_cpu) + ")"
 
 
 if __name__ == "__main__":
