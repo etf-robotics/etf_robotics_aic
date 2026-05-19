@@ -61,6 +61,7 @@ class SimpleNicInsertState:
     hold_steps: torch.Tensor
     desired_tcp_quat_w: torch.Tensor
     tip_pos_tcp: torch.Tensor
+    tip_quat_tcp: torch.Tensor
 
 
 @dataclass
@@ -156,7 +157,7 @@ def compute_simple_nic_insert_world_targets(
 def make_simple_nic_insert_state(
     env: gym.Env,
     *,
-    tcp_body: str = "sfp_tip_link",
+    tcp_body: str = "gripper_tcp",
     tip_body: str = "sfp_tip_link",
 ) -> SimpleNicInsertState:
     """Capture the initial controlled-body orientation and body-to-tip offset."""
@@ -167,7 +168,7 @@ def make_simple_nic_insert_state(
     tcp_quat_w = robot.data.body_quat_w[:, tcp_id, :].clone()
     tip_pos_w = robot.data.body_pos_w[:, tip_id, :]
     tip_quat_w = robot.data.body_quat_w[:, tip_id, :]
-    tip_pos_tcp, _ = math_utils.subtract_frame_transforms(
+    tip_pos_tcp, tip_quat_tcp = math_utils.subtract_frame_transforms(
         tcp_pos_w,
         tcp_quat_w,
         tip_pos_w,
@@ -184,6 +185,7 @@ def make_simple_nic_insert_state(
         hold_steps=torch.zeros((env.num_envs,), dtype=torch.long, device=env.device),
         desired_tcp_quat_w=tcp_quat_w,
         tip_pos_tcp=tip_pos_tcp,
+        tip_quat_tcp=tip_quat_tcp,
     )
 
 
@@ -193,7 +195,7 @@ def compute_simple_nic_insert_oracle(
     targets: SimpleNicInsertTargets,
     state: SimpleNicInsertState,
     *,
-    tcp_body: str = "sfp_tip_link",
+    tcp_body: str = "gripper_tcp",
     tip_body: str = "sfp_tip_link",
     pos_gain: float = 0.8,
     rot_gain: float = 0.5,
@@ -219,13 +221,11 @@ def compute_simple_nic_insert_oracle(
     insert_fraction, target_tip_pos_w = _current_target_tip_pos(world_targets, state)
     tip_error = torch.linalg.norm(target_tip_pos_w - tip_pos_w, dim=1)
     lateral_xy_error = _world_xy_error(tip_pos_w, target_tip_pos_w)
-    path_distance, _, path_lateral_error = _project_tip_to_path(world_targets, tip_pos_w)
+    _, _, path_lateral_error = _project_tip_to_path(world_targets, tip_pos_w)
     reached_approach = (state.phase == int(SimpleNicInsertPhase.APPROACH)) & (tip_error <= approach_threshold)
     state.phase[reached_approach] = int(SimpleNicInsertPhase.INSERT)
 
     insert_mask = state.phase == int(SimpleNicInsertPhase.INSERT)
-    align_mask = insert_mask & (path_lateral_error > insert_lateral_threshold)
-    state.insert_distance[align_mask] = torch.maximum(state.insert_distance[align_mask], path_distance[align_mask])
     advance_mask = insert_mask & (path_lateral_error <= insert_lateral_threshold)
     state.insert_distance[advance_mask] += insert_speed * step_dt
     state.insert_distance[:] = torch.minimum(state.insert_distance, world_targets.path_length)
@@ -243,11 +243,12 @@ def compute_simple_nic_insert_oracle(
     state.phase[reached_final] = int(SimpleNicInsertPhase.HOLD)
     state.hold_steps[state.phase == int(SimpleNicInsertPhase.HOLD)] += 1
 
-    desired_tcp_quat_w = (
+    desired_tip_quat_w = (
         _desired_tip_quat_from_port(world_targets.seat_quat_w)
         if hold_orientation
-        else tcp_quat_w
+        else math_utils.quat_mul(tcp_quat_w, state.tip_quat_tcp)
     )
+    desired_tcp_quat_w = _desired_tcp_quat_from_tip(desired_tip_quat_w, state.tip_quat_tcp)
     desired_tcp_pos_w = target_tip_pos_w - math_utils.quat_apply(desired_tcp_quat_w, state.tip_pos_tcp)
     processed_action = _relative_ik_processed_action(
         robot,
@@ -310,6 +311,10 @@ def _project_tip_to_path(
     closest_w = world_targets.approach_w + path_axis_w * path_distance
     path_lateral_error = torch.linalg.norm(tip_pos_w - closest_w, dim=1)
     return path_distance, closest_w, path_lateral_error
+
+
+def _desired_tcp_quat_from_tip(desired_tip_quat_w: torch.Tensor, tip_quat_tcp: torch.Tensor) -> torch.Tensor:
+    return math_utils.quat_mul(desired_tip_quat_w, math_utils.quat_inv(tip_quat_tcp))
 
 
 def _seat_pose_in_asset_root(

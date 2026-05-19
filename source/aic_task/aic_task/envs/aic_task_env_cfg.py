@@ -621,13 +621,13 @@ class AICTaskEnvCfg(ManagerBasedRLEnvCfg):
         #     asset_name="robot", joint_names=[".*"], scale=0.5, use_default_offset=True
         # )
 
-        # Arm action: differential IK on the SFP tip frame.
+        # Arm action: differential IK on the physical gripper TCP.
         # Scale and IK params must mirror IsaacLabPolicy.py so a checkpoint
         # trained here replays 1:1 through MotionUpdate on the real robot.
         self.actions.arm_action = DifferentialInverseKinematicsActionCfg(
             asset_name="robot",
             joint_names=UR5E_ARM_JOINT_NAMES,
-            body_name="sfp_tip_link",
+            body_name="gripper_tcp",
             controller=DifferentialIKControllerCfg(
                 command_type="pose",
                 use_relative_mode=True,
@@ -638,7 +638,7 @@ class AICTaskEnvCfg(ManagerBasedRLEnvCfg):
         )
 
         # Command generator debug target: use the same body as the DiffIK action.
-        self.commands.ee_pose.body_name = "sfp_tip_link"
+        self.commands.ee_pose.body_name = "gripper_tcp"
         self.commands.ee_pose.ranges.pitch = (math.pi / 2, math.pi / 2)
 
         # Teleop device configuration
