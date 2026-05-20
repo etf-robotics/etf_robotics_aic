@@ -37,11 +37,24 @@ parser.add_argument(
     metavar=("X", "Y", "Z"),
     help="Oracle approach offset in sfp_port_0_link local frame.",
 )
+parser.add_argument(
+    "--target_offset",
+    type=float,
+    nargs=3,
+    default=(0.0, 0.0, 0.0),
+    metavar=("X", "Y", "Z"),
+    help="Extra oracle target-line offset in the sfp_port_0_link local frame.",
+)
+parser.add_argument("--disable_tooth_top_alignment", action="store_true", default=False)
 parser.add_argument("--approach_threshold", type=float, default=0.015)
 parser.add_argument("--insert_lateral_threshold", type=float, default=0.003)
-parser.add_argument("--insert_orientation_threshold_deg", type=float, default=5.0)
+parser.add_argument("--insert_orientation_threshold_deg", type=float, default=10.0)
 parser.add_argument("--insert_misaligned_pos_scale", type=float, default=0.2)
 parser.add_argument("--insert_alignment_only", action="store_true", default=False)
+parser.add_argument("--insert_lateral_correction_scale", type=float, default=1.0)
+parser.add_argument("--insert_rot_scale", type=float, default=0.05)
+parser.add_argument("--insert_lookahead", type=float, default=0.002)
+parser.add_argument("--insert_recenter_backoff", type=float, default=0.003)
 parser.add_argument("--final_threshold", type=float, default=0.003)
 parser.add_argument("--insert_speed", type=float, default=0.010)
 parser.add_argument("--pos_gain", type=float, default=0.8)
@@ -350,6 +363,12 @@ class NicInsertFrameVisualizer:
         for name in sorted(list(self.port_local_poses) + list(self.robot_body_ids) + list(self.tip_child_local_poses)):
             print(f"  - {name}")
         print("  - target.desired_tip_from_port")
+        print("[INFO] Port local positions in nic-card root frame:")
+        for name, (local_pos, _) in sorted(self.port_local_poses.items()):
+            print(f"  - {name}: {_fmt_vec(local_pos)}")
+        print("[INFO] Tip-child local positions in sfp_tip_link frame:")
+        for name, (local_pos, _) in sorted(self.tip_child_local_poses.items()):
+            print(f"  - {name}: {_fmt_vec(local_pos)}")
         print("[INFO] Point colors: cyan=port, magenta=module keypoints, green=derived/target")
 
 
@@ -387,7 +406,12 @@ def main() -> None:
     if args_cli.drive_oracle:
         oracle = _oracle_module()
         action_scale = oracle.get_action_scale(env, env.action_space.shape[-1])
-        oracle_targets = oracle.make_simple_nic_insert_targets(env, approach_offset_local=tuple(args_cli.approach_offset))
+        oracle_targets = oracle.make_simple_nic_insert_targets(
+            env,
+            approach_offset_local=tuple(args_cli.approach_offset),
+            use_tooth_top_alignment=not args_cli.disable_tooth_top_alignment,
+            target_offset_local=tuple(args_cli.target_offset),
+        )
         oracle_state = oracle.make_simple_nic_insert_state(env)
         print("[INFO] Driving frames with simple NIC insertion oracle.")
     else:
@@ -421,6 +445,10 @@ def main() -> None:
                     insert_orientation_threshold=math.radians(args_cli.insert_orientation_threshold_deg),
                     insert_misaligned_pos_scale=args_cli.insert_misaligned_pos_scale,
                     insert_alignment_only=args_cli.insert_alignment_only,
+                    insert_rot_scale=args_cli.insert_rot_scale,
+                    insert_lookahead=args_cli.insert_lookahead,
+                    insert_recenter_backoff=args_cli.insert_recenter_backoff,
+                    insert_lateral_correction_scale=args_cli.insert_lateral_correction_scale,
                     final_threshold=args_cli.final_threshold,
                     insert_speed=args_cli.insert_speed,
                     step_dt=_env_step_dt(env),
@@ -554,6 +582,11 @@ def _axis_angle_deg(a: torch.Tensor, b: torch.Tensor) -> float:
     b = torch.nn.functional.normalize(b, dim=0)
     dot = torch.clamp(torch.dot(a, b), min=-1.0, max=1.0)
     return math.degrees(float(torch.acos(dot)))
+
+
+def _fmt_vec(values: torch.Tensor) -> str:
+    values_cpu = values.detach().cpu()
+    return "(" + ", ".join(f"{float(value):+.6f}" for value in values_cpu) + ")"
 
 
 def _distance_to_line(point: torch.Tensor, line_point: torch.Tensor, line_axis: torch.Tensor) -> torch.Tensor:

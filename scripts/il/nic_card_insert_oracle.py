@@ -27,6 +27,26 @@ parser.add_argument(
         "Default is 10 cm along -Y because insertion is port-local +Y."
     ),
 )
+parser.add_argument(
+    "--target_offset",
+    type=float,
+    nargs=3,
+    default=(0.0, 0.0, 0.0),
+    metavar=("X", "Y", "Z"),
+    help="Extra target-line offset in the sfp_port_0_link local frame, meters.",
+)
+parser.add_argument(
+    "--disable_tooth_top_alignment",
+    action="store_true",
+    default=False,
+    help="Use the entrance-corner centerline directly instead of shifting it from the tooth/top-line relation.",
+)
+parser.add_argument(
+    "--disable_nic_collisions",
+    action="store_true",
+    default=False,
+    help="Debug/demo escape hatch: disable collision APIs under the NIC card before running the oracle.",
+)
 parser.add_argument("--approach_threshold", type=float, default=0.015)
 parser.add_argument(
     "--insert_lateral_threshold",
@@ -37,7 +57,7 @@ parser.add_argument(
 parser.add_argument(
     "--insert_orientation_threshold_deg",
     type=float,
-    default=5.0,
+    default=10.0,
     help="Max tip orientation error before insertion depth is allowed to advance, degrees.",
 )
 parser.add_argument(
@@ -51,6 +71,30 @@ parser.add_argument(
     action="store_true",
     default=False,
     help="In INSERT, command only orientation and do not advance insertion depth.",
+)
+parser.add_argument(
+    "--insert_recenter_backoff",
+    type=float,
+    default=0.003,
+    help="Back off this many meters along the insertion path when INSERT is off-axis or misaligned.",
+)
+parser.add_argument(
+    "--insert_lateral_correction_scale",
+    type=float,
+    default=1.0,
+    help="Scale lateral position correction during INSERT; 0.0 pushes only along the insertion axis.",
+)
+parser.add_argument(
+    "--insert_rot_scale",
+    type=float,
+    default=0.05,
+    help="Scale rotational correction during INSERT after the approach phase has aligned the module.",
+)
+parser.add_argument(
+    "--insert_lookahead",
+    type=float,
+    default=0.002,
+    help="Minimum forward lookahead in meters while INSERT is aligned.",
 )
 parser.add_argument("--final_threshold", type=float, default=0.003)
 parser.add_argument("--insert_speed", type=float, default=0.010, help="Target insertion speed in m/s.")
@@ -73,7 +117,7 @@ parser.add_argument(
     "--start_joint_pos",
     type=float,
     nargs=6,
-    default=(0.45, -1.3542, -1.6648, -1.6933, 1.5710, 1.4110),
+    default=(0.55, -1.3542, -1.6648, -1.6933, 1.5710, 1.4110),
     metavar=("SHOULDER_PAN", "SHOULDER_LIFT", "ELBOW", "WRIST_1", "WRIST_2", "WRIST_3"),
     help="Deterministic UR5e start joints in radians, applied after env.reset().",
 )
@@ -188,10 +232,15 @@ def main() -> None:
     if not args_cli.disable_start_joint_reset:
         _apply_start_joint_pose(env, tuple(args_cli.start_joint_pos))
         _settle_start_pose(env, rate_limiter, args_cli.start_settle_steps)
+    if args_cli.disable_nic_collisions:
+        disabled_count = _disable_asset_collisions(env, "nic_card")
+        print(f"[INFO] Disabled {disabled_count} collision prims under nic_card.")
 
     targets = oracle.make_simple_nic_insert_targets(
         env,
         approach_offset_local=tuple(args_cli.approach_offset),
+        use_tooth_top_alignment=not args_cli.disable_tooth_top_alignment,
+        target_offset_local=tuple(args_cli.target_offset),
     )
     world_targets = oracle.compute_simple_nic_insert_world_targets(env, targets)
     state = oracle.make_simple_nic_insert_state(env)
@@ -205,9 +254,22 @@ def main() -> None:
         "[INFO] insert orientation gate: "
         f"{args_cli.insert_orientation_threshold_deg:.2f} deg, "
         f"misaligned_pos_scale={args_cli.insert_misaligned_pos_scale:.3f}, "
-        f"alignment_only={args_cli.insert_alignment_only}"
+        f"alignment_only={args_cli.insert_alignment_only}, "
+        f"insert_lateral_correction_scale={args_cli.insert_lateral_correction_scale:.3f}, "
+        f"insert_rot_scale={args_cli.insert_rot_scale:.3f}, "
+        f"lookahead={args_cli.insert_lookahead:.4f} m, "
+        f"recenter_backoff={args_cli.insert_recenter_backoff:.4f} m"
     )
     print(f"[INFO] approach_offset in sfp_port_0_link frame: {tuple(args_cli.approach_offset)}")
+    print(
+        f"[INFO] target_offset in sfp_port_0_link frame: {tuple(args_cli.target_offset)}, "
+        f"tooth_top_alignment={not args_cli.disable_tooth_top_alignment}"
+    )
+    print(
+        "[INFO] insertion reference in sfp_tip_link frame: "
+        f"{state.insertion_ref_pos_tip[0].detach().cpu().tolist()} "
+        "(midpoint of sfp_tip_side_left/right)"
+    )
     print(f"[INFO] cached seat_pos_root[0]: {targets.seat_pos_root[0].detach().cpu().tolist()}")
     print(f"[INFO] live seat_w[0]: {world_targets.seat_w[0].detach().cpu().tolist()}")
     print(f"[INFO] live approach_w[0]: {world_targets.approach_w[0].detach().cpu().tolist()}")
@@ -229,6 +291,10 @@ def main() -> None:
                 insert_orientation_threshold=math.radians(args_cli.insert_orientation_threshold_deg),
                 insert_misaligned_pos_scale=args_cli.insert_misaligned_pos_scale,
                 insert_alignment_only=args_cli.insert_alignment_only,
+                insert_rot_scale=args_cli.insert_rot_scale,
+                insert_lookahead=args_cli.insert_lookahead,
+                insert_recenter_backoff=args_cli.insert_recenter_backoff,
+                insert_lateral_correction_scale=args_cli.insert_lateral_correction_scale,
                 final_threshold=args_cli.final_threshold,
                 insert_speed=args_cli.insert_speed,
                 step_dt=_env_step_dt(env),
@@ -244,7 +310,10 @@ def main() -> None:
                     xy_abs = torch.abs(xy_delta)
                     path_xy_msg = (
                         f" path_line_err={float(output.path_lateral_error[0]):.4f} m"
+                        f" path_s={float(output.path_distance[0]):.4f} m"
+                        f" target_s={float(output.target_path_distance[0]):.4f} m"
                         f" path_xy_err={float(output.lateral_xy_error[0]):.4f} m"
+                        f" path_err_port={_fmt_vec(output.path_error_local[0])}"
                         f" abs_xy=({float(xy_abs[0]):.4f}, {float(xy_abs[1]):.4f})"
                         f" ori_err={math.degrees(float(output.orientation_error[0])):.2f} deg"
                         f" pos_scale={float(output.position_scale[0]):.2f}"
@@ -321,6 +390,30 @@ def _settle_start_pose(env: gym.Env, rate_limiter: RateLimiter, steps: int) -> N
         if env.sim.is_stopped():
             break
         rate_limiter.sleep(env)
+
+
+def _disable_asset_collisions(env: gym.Env, asset_name: str) -> int:
+    import omni.usd
+    from pxr import UsdPhysics
+
+    from aic_task.geometry.runtime import resolve_asset_root_prim_path
+
+    stage = omni.usd.get_context().get_stage()
+    asset = env.scene[asset_name]
+    disabled_count = 0
+    root_paths = [resolve_asset_root_prim_path(asset, env_index) for env_index in range(env.num_envs)]
+    for root_path in root_paths:
+        root_prefix = root_path.rstrip("/") + "/"
+        for prim in stage.Traverse():
+            prim_path = prim.GetPath().pathString
+            if prim_path != root_path and not prim_path.startswith(root_prefix):
+                continue
+            if not prim.HasAPI(UsdPhysics.CollisionAPI):
+                continue
+            collision_api = UsdPhysics.CollisionAPI(prim)
+            collision_api.GetCollisionEnabledAttr().Set(False)
+            disabled_count += 1
+    return disabled_count
 
 
 def _fmt_vec(values: torch.Tensor) -> str:
