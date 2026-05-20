@@ -36,6 +36,25 @@ parser.add_argument(
     help="Extra target-line offset in the sfp_port_0_link local frame, meters.",
 )
 parser.add_argument(
+    "--plug_frame_offset",
+    type=float,
+    nargs=3,
+    default=(0.0, 0.0, 0.0),
+    metavar=("X", "Y", "Z"),
+    help=(
+        "Extra calibrated plug-frame position offset in sfp_tip_link local frame, meters. "
+        "Applied on top of the sfp_tip_side_left/right midpoint."
+    ),
+)
+parser.add_argument(
+    "--plug_frame_rpy_offset_deg",
+    type=float,
+    nargs=3,
+    default=(0.0, 0.0, 0.0),
+    metavar=("ROLL", "PITCH", "YAW"),
+    help="Calibrated plug-frame RPY rotation offset in sfp_tip_link local XYZ axes, degrees.",
+)
+parser.add_argument(
     "--disable_tooth_top_alignment",
     action="store_true",
     default=False,
@@ -117,7 +136,7 @@ parser.add_argument(
     "--start_joint_pos",
     type=float,
     nargs=6,
-    default=(0.55, -1.3542, -1.6648, -1.6933, 1.5710, 1.4110),
+    default=(0.45, -1.3542, -1.6648, -1.6933, 1.5710, 1.4110),
     metavar=("SHOULDER_PAN", "SHOULDER_LIFT", "ELBOW", "WRIST_1", "WRIST_2", "WRIST_3"),
     help="Deterministic UR5e start joints in radians, applied after env.reset().",
 )
@@ -240,10 +259,16 @@ def main() -> None:
         env,
         approach_offset_local=tuple(args_cli.approach_offset),
         use_tooth_top_alignment=not args_cli.disable_tooth_top_alignment,
+        plug_frame_offset_tip=tuple(args_cli.plug_frame_offset),
+        plug_frame_rpy_offset_deg=tuple(args_cli.plug_frame_rpy_offset_deg),
         target_offset_local=tuple(args_cli.target_offset),
     )
     world_targets = oracle.compute_simple_nic_insert_world_targets(env, targets)
-    state = oracle.make_simple_nic_insert_state(env)
+    state = oracle.make_simple_nic_insert_state(
+        env,
+        plug_frame_offset_tip=tuple(args_cli.plug_frame_offset),
+        plug_frame_rpy_offset_deg=tuple(args_cli.plug_frame_rpy_offset_deg),
+    )
 
     print(f"[INFO] Running simple NIC insert oracle on {args_cli.task}")
     print(f"[INFO] Action scale: {action_scale[0].detach().cpu().tolist()}")
@@ -269,6 +294,11 @@ def main() -> None:
         "[INFO] insertion reference in sfp_tip_link frame: "
         f"{state.insertion_ref_pos_tip[0].detach().cpu().tolist()} "
         "(midpoint of sfp_tip_side_left/right)"
+    )
+    print(
+        "[INFO] calibrated plug frame in sfp_tip_link frame: "
+        f"pos={state.plug_frame_pos_tip[0].detach().cpu().tolist()}, "
+        f"rpy_offset_deg={tuple(args_cli.plug_frame_rpy_offset_deg)}"
     )
     print(f"[INFO] cached seat_pos_root[0]: {targets.seat_pos_root[0].detach().cpu().tolist()}")
     print(f"[INFO] live seat_w[0]: {world_targets.seat_w[0].detach().cpu().tolist()}")

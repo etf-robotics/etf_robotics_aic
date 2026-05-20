@@ -6,7 +6,7 @@ and draws the coordinate systems/keypoints we keep discussing:
 * NIC port seat, entrance, and four entrance corners.
 * Robot gripper TCP, SFP module link, and raw SFP tip link.
 * SFP tip side/tooth keypoints, resolved from USD under the live tip body.
-* Desired SFP tip orientation derived from the confirmed port/tip axis mapping.
+* Desired calibrated plug orientation derived from the confirmed port/tip axis mapping.
 
 The script can either hold zero action or drive the current simple insertion
 oracle while the markers update.
@@ -44,6 +44,22 @@ parser.add_argument(
     default=(0.0, 0.0, 0.0),
     metavar=("X", "Y", "Z"),
     help="Extra oracle target-line offset in the sfp_port_0_link local frame.",
+)
+parser.add_argument(
+    "--plug_frame_offset",
+    type=float,
+    nargs=3,
+    default=(0.0, 0.0, 0.0),
+    metavar=("X", "Y", "Z"),
+    help="Extra calibrated plug-frame position offset in sfp_tip_link local frame, meters.",
+)
+parser.add_argument(
+    "--plug_frame_rpy_offset_deg",
+    type=float,
+    nargs=3,
+    default=(0.0, 0.0, 0.0),
+    metavar=("ROLL", "PITCH", "YAW"),
+    help="Calibrated plug-frame RPY rotation offset in sfp_tip_link local XYZ axes, degrees.",
 )
 parser.add_argument("--disable_tooth_top_alignment", action="store_true", default=False)
 parser.add_argument("--approach_threshold", type=float, default=0.015)
@@ -144,13 +160,33 @@ class RateLimiter:
 class NicInsertFrameVisualizer:
     """Collect and draw live frame/keypoint poses for one environment."""
 
-    def __init__(self, env: gym.Env, env_index: int, *, frame_scale: float, point_radius: float):
+    def __init__(
+        self,
+        env: gym.Env,
+        env_index: int,
+        *,
+        frame_scale: float,
+        point_radius: float,
+        plug_frame_offset: tuple[float, float, float],
+        plug_frame_rpy_offset_deg: tuple[float, float, float],
+    ):
         self.env = env
         self.env_index = min(env_index, env.num_envs - 1)
         self.device = env.device
         self.frame_scale = frame_scale
         self.robot = env.scene["robot"]
         self.nic_card = env.scene["nic_card"]
+        self.plug_frame_offset = torch.tensor(
+            plug_frame_offset,
+            dtype=self.robot.data.body_pos_w.dtype,
+            device=self.device,
+        )
+        self.plug_frame_quat_tip = _quat_from_rpy_offset_deg(
+            plug_frame_rpy_offset_deg,
+            dtype=self.robot.data.body_quat_w.dtype,
+            device=self.device,
+        )
+        self.plug_frame_rpy_offset_deg = plug_frame_rpy_offset_deg
 
         self.port_local_poses = self._resolve_port_local_poses()
         self.robot_body_ids = self._resolve_robot_body_ids()
@@ -212,16 +248,16 @@ class NicInsertFrameVisualizer:
 
         port_seat = self.latest_frames.get("port.seat_link")
         port_entrance = self.latest_frames.get("port.entrance")
-        tip = self.latest_frames.get("robot.sfp_tip_link")
-        if port_seat is None or tip is None:
-            return "missing port.seat_link or robot.sfp_tip_link"
+        plug = self.latest_frames.get("robot.calibrated_plug_frame")
+        if port_seat is None or plug is None:
+            return "missing port.seat_link or robot.calibrated_plug_frame"
 
         port_y = _local_axis(port_seat[1], (0.0, 1.0, 0.0))
         port_z = _local_axis(port_seat[1], (0.0, 0.0, 1.0))
-        tip_y = _local_axis(tip[1], (0.0, 1.0, 0.0))
-        tip_z = _local_axis(tip[1], (0.0, 0.0, 1.0))
-        y_axis_err = _axis_angle_deg(tip_y, -port_z)
-        insert_axis_err = _axis_angle_deg(tip_z, -port_y)
+        plug_y = _local_axis(plug[1], (0.0, 1.0, 0.0))
+        plug_z = _local_axis(plug[1], (0.0, 0.0, 1.0))
+        y_axis_err = _axis_angle_deg(plug_y, -port_z)
+        insert_axis_err = _axis_angle_deg(plug_z, -port_y)
 
         path_axis_err = None
         if port_entrance is not None:
@@ -231,12 +267,12 @@ class NicInsertFrameVisualizer:
         width_err = self._width_axis_error_deg()
         line_err = None
         if port_entrance is not None:
-            line_err = _distance_to_line(tip[0], port_entrance[0], port_y)
+            line_err = _distance_to_line(plug[0], port_entrance[0], port_y)
 
         parts = [
-            f"tip(+Y) vs port(-Z)={y_axis_err:.2f} deg",
-            f"tip(+Z) vs port(-Y)={insert_axis_err:.2f} deg",
-            f"tip_to_port_axis={float(line_err):.4f} m" if line_err is not None else "tip_to_port_axis=n/a",
+            f"plug(+Y) vs port(-Z)={y_axis_err:.2f} deg",
+            f"plug(+Z) vs port(-Y)={insert_axis_err:.2f} deg",
+            f"plug_to_port_axis={float(line_err):.4f} m" if line_err is not None else "plug_to_port_axis=n/a",
         ]
         if path_axis_err is not None:
             parts.append(f"(seat-entrance) vs port(+Y)={path_axis_err:.2f} deg")
@@ -308,14 +344,25 @@ class NicInsertFrameVisualizer:
             tip_pos, tip_quat = tip_frame
             for label, (local_pos, local_quat) in self.tip_child_local_poses.items():
                 frames[label] = _compose_pose(tip_pos, tip_quat, local_pos, local_quat)
+            plug_local_pos = self._plug_frame_pos_tip()
+            frames["robot.calibrated_plug_frame"] = _compose_pose(
+                tip_pos,
+                tip_quat,
+                plug_local_pos,
+                self.plug_frame_quat_tip,
+            )
 
         desired = self._desired_tip_frame(frames)
         if desired is not None:
-            frames["target.desired_tip_from_port"] = desired
+            frames["target.desired_plug_from_port"] = desired
         return frames
 
     def _compute_points(self, frames: dict[str, tuple[torch.Tensor, torch.Tensor]]) -> dict[str, torch.Tensor]:
-        points = {name: pose[0] for name, pose in frames.items() if name.startswith(("port.", "robot.sfp_tip_side", "robot.sfp_tip_tooth", "target."))}
+        points = {
+            name: pose[0]
+            for name, pose in frames.items()
+            if name.startswith(("port.", "robot.sfp_tip_side", "robot.sfp_tip_tooth", "robot.calibrated", "target."))
+        }
         side_left = points.get("robot.sfp_tip_side_left")
         side_right = points.get("robot.sfp_tip_side_right")
         if side_left is not None and side_right is not None:
@@ -338,6 +385,15 @@ class NicInsertFrameVisualizer:
             return None
         desired_quat = _desired_tip_quat_from_port_quat(port_seat[1].unsqueeze(0))[0]
         return port_seat[0].clone(), desired_quat
+
+    def _plug_frame_pos_tip(self) -> torch.Tensor:
+        side_left = self.tip_child_local_poses.get("robot.sfp_tip_side_left")
+        side_right = self.tip_child_local_poses.get("robot.sfp_tip_side_right")
+        if side_left is None or side_right is None:
+            base = torch.zeros(3, dtype=self.robot.data.body_pos_w.dtype, device=self.device)
+        else:
+            base = 0.5 * (side_left[0] + side_right[0])
+        return base + self.plug_frame_offset
 
     def _compute_port_seat_frame_only(self) -> tuple[torch.Tensor, torch.Tensor] | None:
         local = self.port_local_poses.get("port.seat_link")
@@ -362,13 +418,19 @@ class NicInsertFrameVisualizer:
         print("[INFO] Visualized frames:")
         for name in sorted(list(self.port_local_poses) + list(self.robot_body_ids) + list(self.tip_child_local_poses)):
             print(f"  - {name}")
-        print("  - target.desired_tip_from_port")
+        print("  - robot.calibrated_plug_frame")
+        print("  - target.desired_plug_from_port")
         print("[INFO] Port local positions in nic-card root frame:")
         for name, (local_pos, _) in sorted(self.port_local_poses.items()):
             print(f"  - {name}: {_fmt_vec(local_pos)}")
         print("[INFO] Tip-child local positions in sfp_tip_link frame:")
         for name, (local_pos, _) in sorted(self.tip_child_local_poses.items()):
             print(f"  - {name}: {_fmt_vec(local_pos)}")
+        print(
+            "[INFO] Calibrated plug frame in sfp_tip_link frame: "
+            f"pos={_fmt_vec(self._plug_frame_pos_tip())}, "
+            f"rpy_offset_deg={self.plug_frame_rpy_offset_deg}"
+        )
         print("[INFO] Point colors: cyan=port, magenta=module keypoints, green=derived/target")
 
 
@@ -398,6 +460,8 @@ def main() -> None:
         args_cli.env_index,
         frame_scale=args_cli.frame_scale,
         point_radius=args_cli.point_radius,
+        plug_frame_offset=tuple(args_cli.plug_frame_offset),
+        plug_frame_rpy_offset_deg=tuple(args_cli.plug_frame_rpy_offset_deg),
     )
     oracle_state = None
     oracle_targets = None
@@ -410,9 +474,15 @@ def main() -> None:
             env,
             approach_offset_local=tuple(args_cli.approach_offset),
             use_tooth_top_alignment=not args_cli.disable_tooth_top_alignment,
+            plug_frame_offset_tip=tuple(args_cli.plug_frame_offset),
+            plug_frame_rpy_offset_deg=tuple(args_cli.plug_frame_rpy_offset_deg),
             target_offset_local=tuple(args_cli.target_offset),
         )
-        oracle_state = oracle.make_simple_nic_insert_state(env)
+        oracle_state = oracle.make_simple_nic_insert_state(
+            env,
+            plug_frame_offset_tip=tuple(args_cli.plug_frame_offset),
+            plug_frame_rpy_offset_deg=tuple(args_cli.plug_frame_rpy_offset_deg),
+        )
         print("[INFO] Driving frames with simple NIC insertion oracle.")
     else:
         print("[INFO] Driving frames with zero action. Use --drive_oracle to move with the simple oracle.")
@@ -587,6 +657,18 @@ def _axis_angle_deg(a: torch.Tensor, b: torch.Tensor) -> float:
 def _fmt_vec(values: torch.Tensor) -> str:
     values_cpu = values.detach().cpu()
     return "(" + ", ".join(f"{float(value):+.6f}" for value in values_cpu) + ")"
+
+
+def _quat_from_rpy_offset_deg(
+    rpy_deg: tuple[float, float, float],
+    *,
+    dtype: torch.dtype,
+    device: str,
+) -> torch.Tensor:
+    roll = torch.tensor([math.radians(float(rpy_deg[0]))], dtype=dtype, device=device)
+    pitch = torch.tensor([math.radians(float(rpy_deg[1]))], dtype=dtype, device=device)
+    yaw = torch.tensor([math.radians(float(rpy_deg[2]))], dtype=dtype, device=device)
+    return math_utils.quat_from_euler_xyz(roll, pitch, yaw)[0]
 
 
 def _distance_to_line(point: torch.Tensor, line_point: torch.Tensor, line_axis: torch.Tensor) -> torch.Tensor:
