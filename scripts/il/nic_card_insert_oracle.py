@@ -42,8 +42,8 @@ parser.add_argument(
     default=(0.0, 0.0, 0.0),
     metavar=("X", "Y", "Z"),
     help=(
-        "Extra calibrated plug-frame position offset in sfp_tip_link local frame, meters. "
-        "Applied on top of the sfp_tip_side_left/right midpoint."
+        "Extra calibrated plug-frame position offset in world frame, meters. "
+        "Applied after transforming the sfp_tip_side_left/right midpoint to world."
     ),
 )
 parser.add_argument(
@@ -133,6 +133,24 @@ parser.add_argument(
 parser.add_argument("--stream", action="store_true", default=False)
 parser.add_argument("--disable_orientation_hold", action="store_true", default=False)
 parser.add_argument(
+    "--point_log_path",
+    type=str,
+    default=None,
+    help="JSONL path for per-step port/tip/TCP point positions. Default writes to logs/ with a timestamp.",
+)
+parser.add_argument(
+    "--disable_point_log",
+    action="store_true",
+    default=False,
+    help="Disable the per-step JSONL point-position log.",
+)
+parser.add_argument(
+    "--point_log_env_index",
+    type=int,
+    default=0,
+    help="Environment index to write to the per-step point-position log.",
+)
+parser.add_argument(
     "--start_joint_pos",
     type=float,
     nargs=6,
@@ -166,7 +184,9 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 
 import contextlib
+from datetime import datetime
 import importlib.util
+import json
 import math
 from pathlib import Path
 import sys
@@ -175,12 +195,29 @@ import time
 import gymnasium as gym
 import torch
 
+import isaaclab.utils.math as math_utils
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
 import aic_task.tasks  # noqa: F401
 
 _ORACLE = None
+
+PORT_POINT_PATHS = {
+    "sfp_port_0_link": "/sfp_port_0_link",
+    "sfp_port_0_link_entrance": "/sfp_port_0_link/sfp_port_0_link_entrance",
+    "sfp_port_0_front_left": "/sfp_port_0_link/sfp_port_0_link_entrance/sfp_port_0_front_left",
+    "sfp_port_0_back_left": "/sfp_port_0_link/sfp_port_0_link_entrance/sfp_port_0_back_left",
+    "sfp_port_0_back_right": "/sfp_port_0_link/sfp_port_0_link_entrance/sfp_port_0_back_right",
+    "sfp_port_0_front_right": "/sfp_port_0_link/sfp_port_0_link_entrance/sfp_port_0_front_right",
+}
+
+TIP_POINT_NAMES = {
+    "sfp_tip_link": "sfp_tip_link",
+    "sfp_tip_side_left": "sfp_tip_side_left",
+    "sfp_tip_side_right": "sfp_tip_side_right",
+    "sfp_tip_tooth_tip": "sfp_tip_tooth_tip",
+}
 
 
 def _oracle_module():
@@ -259,14 +296,14 @@ def main() -> None:
         env,
         approach_offset_local=tuple(args_cli.approach_offset),
         use_tooth_top_alignment=not args_cli.disable_tooth_top_alignment,
-        plug_frame_offset_tip=tuple(args_cli.plug_frame_offset),
+        plug_frame_offset_w=tuple(args_cli.plug_frame_offset),
         plug_frame_rpy_offset_deg=tuple(args_cli.plug_frame_rpy_offset_deg),
         target_offset_local=tuple(args_cli.target_offset),
     )
     world_targets = oracle.compute_simple_nic_insert_world_targets(env, targets)
     state = oracle.make_simple_nic_insert_state(
         env,
-        plug_frame_offset_tip=tuple(args_cli.plug_frame_offset),
+        plug_frame_offset_w=tuple(args_cli.plug_frame_offset),
         plug_frame_rpy_offset_deg=tuple(args_cli.plug_frame_rpy_offset_deg),
     )
 
@@ -296,79 +333,102 @@ def main() -> None:
         "(midpoint of sfp_tip_side_left/right)"
     )
     print(
-        "[INFO] calibrated plug frame in sfp_tip_link frame: "
-        f"pos={state.plug_frame_pos_tip[0].detach().cpu().tolist()}, "
+        "[INFO] calibrated plug frame offsets: "
+        f"base_pos_tip={state.plug_frame_pos_tip[0].detach().cpu().tolist()}, "
+        f"world_offset={state.plug_frame_offset_w[0].detach().cpu().tolist()}, "
         f"rpy_offset_deg={tuple(args_cli.plug_frame_rpy_offset_deg)}"
     )
     print(f"[INFO] cached seat_pos_root[0]: {targets.seat_pos_root[0].detach().cpu().tolist()}")
     print(f"[INFO] live seat_w[0]: {world_targets.seat_w[0].detach().cpu().tolist()}")
     print(f"[INFO] live approach_w[0]: {world_targets.approach_w[0].detach().cpu().tolist()}")
 
+    point_logger = None
+    if not args_cli.disable_point_log:
+        point_logger = _PointPositionLogger(
+            env,
+            env_index=args_cli.point_log_env_index,
+            output_path=args_cli.point_log_path,
+            offsets={
+                "approach_offset": tuple(args_cli.approach_offset),
+                "target_offset": tuple(args_cli.target_offset),
+                "plug_frame_offset_world": tuple(args_cli.plug_frame_offset),
+                "plug_frame_rpy_offset_deg": tuple(args_cli.plug_frame_rpy_offset_deg),
+                "tooth_top_alignment": not args_cli.disable_tooth_top_alignment,
+            },
+        )
+        print(f"[INFO] Writing point-position log to: {point_logger.path}")
+
     with contextlib.suppress(KeyboardInterrupt), torch.inference_mode():
-        for step in range(args_cli.max_episode_steps):
-            output = oracle.compute_simple_nic_insert_oracle(
-                env,
-                action_scale,
-                targets,
-                state,
-                pos_gain=args_cli.pos_gain,
-                rot_gain=args_cli.rot_gain,
-                max_pos_delta=args_cli.max_pos_delta,
-                insert_max_pos_delta=args_cli.insert_max_pos_delta,
-                max_rot_delta=args_cli.max_rot_delta,
-                approach_threshold=args_cli.approach_threshold,
-                insert_lateral_threshold=args_cli.insert_lateral_threshold,
-                insert_orientation_threshold=math.radians(args_cli.insert_orientation_threshold_deg),
-                insert_misaligned_pos_scale=args_cli.insert_misaligned_pos_scale,
-                insert_alignment_only=args_cli.insert_alignment_only,
-                insert_rot_scale=args_cli.insert_rot_scale,
-                insert_lookahead=args_cli.insert_lookahead,
-                insert_recenter_backoff=args_cli.insert_recenter_backoff,
-                insert_lateral_correction_scale=args_cli.insert_lateral_correction_scale,
-                final_threshold=args_cli.final_threshold,
-                insert_speed=args_cli.insert_speed,
-                step_dt=_env_step_dt(env),
-                hold_orientation=not args_cli.disable_orientation_hold,
-            )
-            env.step(output.raw_action)
-
-            if args_cli.log_every > 0 and step % args_cli.log_every == 0:
-                phase = oracle.SimpleNicInsertPhase(int(output.phase[0])).name
-                path_xy_msg = ""
-                if args_cli.log_path_xy_error:
-                    xy_delta = output.tip_pos_w[0, :2] - output.target_tip_pos_w[0, :2]
-                    xy_abs = torch.abs(xy_delta)
-                    path_xy_msg = (
-                        f" path_line_err={float(output.path_lateral_error[0]):.4f} m"
-                        f" path_s={float(output.path_distance[0]):.4f} m"
-                        f" target_s={float(output.target_path_distance[0]):.4f} m"
-                        f" path_xy_err={float(output.lateral_xy_error[0]):.4f} m"
-                        f" path_err_port={_fmt_vec(output.path_error_local[0])}"
-                        f" abs_xy=({float(xy_abs[0]):.4f}, {float(xy_abs[1]):.4f})"
-                        f" ori_err={math.degrees(float(output.orientation_error[0])):.2f} deg"
-                        f" pos_scale={float(output.position_scale[0]):.2f}"
-                        f" cmd_pos_b={_fmt_vec(output.processed_action[0, :3])}"
-                        f" cmd_rot_b={float(torch.linalg.norm(output.processed_action[0, 3:6])):.4f}"
-                    )
-                print(
-                    f"[INFO] step={step:04d} phase={phase} "
-                    f"tip_err={float(output.tip_error[0]):.4f} m "
-                    f"insert={float(output.insert_fraction[0]) * 100.0:5.1f}% "
-                    f"|a|={float(torch.linalg.norm(output.raw_action[0])):.3f}"
-                    f"{path_xy_msg}"
+        try:
+            for step in range(args_cli.max_episode_steps):
+                output = oracle.compute_simple_nic_insert_oracle(
+                    env,
+                    action_scale,
+                    targets,
+                    state,
+                    pos_gain=args_cli.pos_gain,
+                    rot_gain=args_cli.rot_gain,
+                    max_pos_delta=args_cli.max_pos_delta,
+                    insert_max_pos_delta=args_cli.insert_max_pos_delta,
+                    max_rot_delta=args_cli.max_rot_delta,
+                    approach_threshold=args_cli.approach_threshold,
+                    insert_lateral_threshold=args_cli.insert_lateral_threshold,
+                    insert_orientation_threshold=math.radians(args_cli.insert_orientation_threshold_deg),
+                    insert_misaligned_pos_scale=args_cli.insert_misaligned_pos_scale,
+                    insert_alignment_only=args_cli.insert_alignment_only,
+                    insert_rot_scale=args_cli.insert_rot_scale,
+                    insert_lookahead=args_cli.insert_lookahead,
+                    insert_recenter_backoff=args_cli.insert_recenter_backoff,
+                    insert_lateral_correction_scale=args_cli.insert_lateral_correction_scale,
+                    final_threshold=args_cli.final_threshold,
+                    insert_speed=args_cli.insert_speed,
+                    step_dt=_env_step_dt(env),
+                    hold_orientation=not args_cli.disable_orientation_hold,
                 )
+                phase = oracle.SimpleNicInsertPhase(int(output.phase[0])).name
+                if point_logger is not None:
+                    point_logger.write_step(step, phase, output, state)
+                env.step(output.raw_action)
 
-            hold_done = (
-                int(state.phase[0]) == int(oracle.SimpleNicInsertPhase.HOLD)
-                and int(state.hold_steps[0]) >= args_cli.hold_steps
-            )
-            if hold_done:
-                print(f"[INFO] Hold complete after {step + 1} steps.")
-                break
+                if args_cli.log_every > 0 and step % args_cli.log_every == 0:
+                    path_xy_msg = ""
+                    if args_cli.log_path_xy_error:
+                        xy_delta = output.tip_pos_w[0, :2] - output.target_tip_pos_w[0, :2]
+                        xy_abs = torch.abs(xy_delta)
+                        path_xy_msg = (
+                            f" path_line_err={float(output.path_lateral_error[0]):.4f} m"
+                            f" path_s={float(output.path_distance[0]):.4f} m"
+                            f" target_s={float(output.target_path_distance[0]):.4f} m"
+                            f" path_xy_err={float(output.lateral_xy_error[0]):.4f} m"
+                            f" path_err_port={_fmt_vec(output.path_error_local[0])}"
+                            f" abs_xy=({float(xy_abs[0]):.4f}, {float(xy_abs[1]):.4f})"
+                            f" ori_err={math.degrees(float(output.orientation_error[0])):.2f} deg"
+                            f" pos_scale={float(output.position_scale[0]):.2f}"
+                            f" cmd_pos_b={_fmt_vec(output.processed_action[0, :3])}"
+                            f" cmd_rot_b={float(torch.linalg.norm(output.processed_action[0, 3:6])):.4f}"
+                        )
+                    print(
+                        f"[INFO] step={step:04d} phase={phase} "
+                        f"tip_err={float(output.tip_error[0]):.4f} m "
+                        f"insert={float(output.insert_fraction[0]) * 100.0:5.1f}% "
+                        f"|a|={float(torch.linalg.norm(output.raw_action[0])):.3f}"
+                        f"{path_xy_msg}"
+                    )
 
-            if env.sim.is_stopped():
-                break
-            rate_limiter.sleep(env)
+                hold_done = (
+                    int(state.phase[0]) == int(oracle.SimpleNicInsertPhase.HOLD)
+                    and int(state.hold_steps[0]) >= args_cli.hold_steps
+                )
+                if hold_done:
+                    print(f"[INFO] Hold complete after {step + 1} steps.")
+                    break
+
+                if env.sim.is_stopped():
+                    break
+                rate_limiter.sleep(env)
+        finally:
+            if point_logger is not None:
+                point_logger.close()
 
     env.close()
 
@@ -378,6 +438,197 @@ def _env_step_dt(env: gym.Env) -> float:
     if step_dt is not None and float(step_dt) > 0.0:
         return float(step_dt)
     return 1.0 / max(1, args_cli.step_hz)
+
+
+class _PointPositionLogger:
+    """Write live world positions of port/module debug points as JSONL."""
+
+    def __init__(
+        self,
+        env: gym.Env,
+        *,
+        env_index: int,
+        output_path: str | None,
+        offsets: dict,
+    ):
+        self.env = env
+        self.env_index = min(max(0, env_index), env.num_envs - 1)
+        self.robot = env.scene["robot"]
+        self.nic_card = env.scene["nic_card"]
+        self.tcp_id = _first_body_id(self.robot, "gripper_tcp")
+        self.tip_id = _first_body_id(self.robot, "sfp_tip_link")
+        self.port_local_positions = self._resolve_port_local_positions()
+        self.tip_local_positions = self._resolve_tip_local_positions()
+
+        if output_path is None:
+            logs_dir = Path("logs")
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = str(logs_dir / f"nic_card_insert_points_{timestamp}.jsonl")
+        self.path = Path(output_path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = self.path.open("w", encoding="utf-8")
+        self._write_json(
+            {
+                "type": "metadata",
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "task": args_cli.task,
+                "env_index": self.env_index,
+                "coordinate_frame": "world",
+                "offsets": offsets,
+                "port_points": list(PORT_POINT_PATHS.keys()),
+                "tip_points": list(TIP_POINT_NAMES.keys()),
+                "tcp_point": "gripper_tcp",
+                "derived_points": ["calibrated_plug_frame", "target_plug_frame"],
+            }
+        )
+
+    def write_step(self, step: int, phase: str, output, state) -> None:
+        self._write_json(
+            {
+                "type": "step",
+                "step": step,
+                "phase": phase,
+                "port": self._port_world_positions(),
+                "tip": self._tip_world_positions(),
+                "tcp_gripper": _tensor_list(self.robot.data.body_pos_w[self.env_index, self.tcp_id]),
+                "derived": {
+                    "calibrated_plug_frame": _tensor_list(output.tip_pos_w[self.env_index]),
+                    "target_plug_frame": _tensor_list(output.target_tip_pos_w[self.env_index]),
+                },
+                "diagnostics": {
+                    "tip_error": float(output.tip_error[self.env_index]),
+                    "path_lateral_error": float(output.path_lateral_error[self.env_index]),
+                    "path_distance": float(output.path_distance[self.env_index]),
+                    "target_path_distance": float(output.target_path_distance[self.env_index]),
+                    "orientation_error_deg": math.degrees(float(output.orientation_error[self.env_index])),
+                    "plug_frame_offset_world": _tensor_list(state.plug_frame_offset_w[self.env_index]),
+                },
+            }
+        )
+
+    def close(self) -> None:
+        self._file.close()
+
+    def _write_json(self, payload: dict) -> None:
+        self._file.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        self._file.flush()
+
+    def _port_world_positions(self) -> dict[str, list[float]]:
+        card_pos = self.nic_card.data.root_pos_w[self.env_index]
+        card_quat = self.nic_card.data.root_quat_w[self.env_index]
+        return {
+            name: _tensor_list(card_pos + math_utils.quat_apply(card_quat.unsqueeze(0), local_pos.unsqueeze(0))[0])
+            for name, local_pos in self.port_local_positions.items()
+        }
+
+    def _tip_world_positions(self) -> dict[str, list[float]]:
+        tip_pos = self.robot.data.body_pos_w[self.env_index, self.tip_id]
+        tip_quat = self.robot.data.body_quat_w[self.env_index, self.tip_id]
+        positions = {"sfp_tip_link": _tensor_list(tip_pos)}
+        for name, local_pos in self.tip_local_positions.items():
+            positions[name] = _tensor_list(tip_pos + math_utils.quat_apply(tip_quat.unsqueeze(0), local_pos.unsqueeze(0))[0])
+        return positions
+
+    def _resolve_port_local_positions(self) -> dict[str, torch.Tensor]:
+        from aic_task.geometry.runtime import resolve_asset_root_prim_path
+
+        root_path = resolve_asset_root_prim_path(self.nic_card, self.env_index)
+        return {
+            name: _prim_position_in_root(root_path, prim_path, dtype=self.nic_card.data.root_pos_w.dtype, device=self.env.device)
+            for name, prim_path in PORT_POINT_PATHS.items()
+        }
+
+    def _resolve_tip_local_positions(self) -> dict[str, torch.Tensor]:
+        import omni.usd
+        from pxr import UsdGeom
+
+        stage = omni.usd.get_context().get_stage()
+        roots = _asset_search_roots(self.robot, self.env_index)
+        tip_prim = _find_prim_by_basename(stage, roots, "sfp_tip_link")
+        if tip_prim is None:
+            raise KeyError(f"Could not find sfp_tip_link under robot roots: {roots}")
+        cache = UsdGeom.XformCache()
+        tip_inv = cache.GetLocalToWorldTransform(tip_prim).GetInverse()
+        positions = {}
+        for name, basename in TIP_POINT_NAMES.items():
+            if name == "sfp_tip_link":
+                continue
+            child_prim = _find_prim_by_basename(stage, roots, basename)
+            if child_prim is None:
+                raise KeyError(f"Could not find {basename} under robot roots: {roots}")
+            child_w = cache.GetLocalToWorldTransform(child_prim).ExtractTranslation()
+            child_tip = tip_inv.Transform(child_w)
+            positions[name] = torch.tensor(
+                (float(child_tip[0]), float(child_tip[1]), float(child_tip[2])),
+                dtype=self.robot.data.body_pos_w.dtype,
+                device=self.env.device,
+            )
+        return positions
+
+
+def _first_body_id(robot, body_name: str) -> int:
+    body_ids = robot.find_bodies(body_name, preserve_order=True)[0]
+    if len(body_ids) == 0:
+        available = ", ".join(getattr(robot, "body_names", []))
+        raise KeyError(f"Robot body '{body_name}' not found. Available robot bodies: {available}")
+    return int(body_ids[0])
+
+
+def _prim_position_in_root(root_path: str, prim_path: str, *, dtype: torch.dtype, device: str) -> torch.Tensor:
+    import omni.usd
+    from pxr import UsdGeom
+
+    from aic_task.geometry.runtime import _candidate_prim_paths, _resolve_prim
+
+    stage = omni.usd.get_context().get_stage()
+    root_prim = stage.GetPrimAtPath(root_path)
+    _, prim = _resolve_prim(stage, root_path, prim_path)
+    if not root_prim.IsValid() or not prim.IsValid():
+        candidates = ", ".join(_candidate_prim_paths(root_path, prim_path))
+        raise KeyError(f"USD prim '{prim_path}' was not found. Tried: {candidates}.")
+    cache = UsdGeom.XformCache()
+    root_matrix = cache.GetLocalToWorldTransform(root_prim)
+    prim_matrix = cache.GetLocalToWorldTransform(prim)
+    local = root_matrix.GetInverse().Transform(prim_matrix.ExtractTranslation())
+    return torch.tensor((float(local[0]), float(local[1]), float(local[2])), dtype=dtype, device=device)
+
+
+def _asset_search_roots(asset, env_index: int) -> list[str]:
+    prim_paths = list(getattr(asset.root_physx_view, "prim_paths", []))
+    if not prim_paths:
+        return []
+    prim_path = str(prim_paths[min(env_index, len(prim_paths) - 1)])
+    roots = [prim_path]
+    parent = prim_path
+    for _ in range(3):
+        if "/" not in parent.rstrip("/"):
+            break
+        parent = parent.rstrip("/").rsplit("/", 1)[0]
+        if parent and parent not in roots:
+            roots.append(parent)
+    return roots
+
+
+def _find_prim_by_basename(stage, roots: list[str], basename: str):
+    from aic_task.geometry.runtime import _candidate_prim_paths
+
+    for root in roots:
+        for candidate in _candidate_prim_paths(root, basename):
+            prim = stage.GetPrimAtPath(candidate)
+            if prim.IsValid():
+                return prim
+    for prim in stage.Traverse():
+        prim_path = prim.GetPath().pathString
+        if not any(prim_path == root or prim_path.startswith(root.rstrip("/") + "/") for root in roots):
+            continue
+        if prim_path.rsplit("/", 1)[-1] == basename:
+            return prim
+    return None
+
+
+def _tensor_list(values: torch.Tensor) -> list[float]:
+    return [float(value) for value in values.detach().cpu().tolist()]
 
 
 def _disable_rewards(env_cfg) -> None:

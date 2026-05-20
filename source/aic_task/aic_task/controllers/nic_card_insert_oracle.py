@@ -64,6 +64,7 @@ class SimpleNicInsertState:
     tip_quat_tcp: torch.Tensor
     insertion_ref_pos_tip: torch.Tensor
     plug_frame_pos_tip: torch.Tensor
+    plug_frame_offset_w: torch.Tensor
     plug_frame_quat_tip: torch.Tensor
 
 
@@ -106,7 +107,7 @@ def make_simple_nic_insert_targets(
     tip_body: str = "sfp_tip_link",
     insertion_ref_child_names: tuple[str, str] = ("sfp_tip_side_left", "sfp_tip_side_right"),
     tooth_child_name: str = "sfp_tip_tooth_tip",
-    plug_frame_offset_tip: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    plug_frame_offset_w: tuple[float, float, float] = (0.0, 0.0, 0.0),
     plug_frame_rpy_offset_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
     target_offset_local: tuple[float, float, float] = (0.0, 0.0, 0.0),
     corner_paths: tuple[str, str, str, str] = (
@@ -159,11 +160,6 @@ def make_simple_nic_insert_targets(
                     dtype=torch.float64,
                     device="cpu",
                 )
-                plug_frame_pos_tip = insertion_ref_pos_tip + torch.tensor(
-                    plug_frame_offset_tip,
-                    dtype=torch.float64,
-                    device="cpu",
-                )
                 plug_frame_quat_tip = _quat_from_rpy_offset_deg(
                     plug_frame_rpy_offset_deg,
                     dtype=torch.float64,
@@ -176,7 +172,7 @@ def make_simple_nic_insert_targets(
                     seat_quat_root,
                     corner_paths,
                     tooth_pos_tip=tuple(float(value) for value in tooth_pos_tip.tolist()),
-                    plug_frame_pos_tip=tuple(float(value) for value in plug_frame_pos_tip.tolist()),
+                    plug_frame_pos_tip=tuple(float(value) for value in insertion_ref_pos_tip.tolist()),
                     plug_frame_quat_tip=tuple(float(value) for value in plug_frame_quat_tip.tolist()),
                 )
             except Exception as exc:
@@ -232,7 +228,7 @@ def make_simple_nic_insert_state(
     tcp_body: str = "gripper_tcp",
     tip_body: str = "sfp_tip_link",
     insertion_ref_child_names: tuple[str, str] = ("sfp_tip_side_left", "sfp_tip_side_right"),
-    plug_frame_offset_tip: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    plug_frame_offset_w: tuple[float, float, float] = (0.0, 0.0, 0.0),
     plug_frame_rpy_offset_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
 ) -> SimpleNicInsertState:
     """Capture the initial controlled-body orientation and calibrated plug frame."""
@@ -257,12 +253,13 @@ def make_simple_nic_insert_state(
         dtype=tcp_pos_w.dtype,
         device=env.device,
     )
-    plug_frame_offset = torch.tensor(
-        plug_frame_offset_tip,
+    plug_frame_pos_tip = insertion_ref_pos_tip
+    plug_frame_offset_w_tensor = torch.tensor(
+        plug_frame_offset_w,
         dtype=tcp_pos_w.dtype,
         device=env.device,
     ).unsqueeze(0)
-    plug_frame_pos_tip = insertion_ref_pos_tip + plug_frame_offset.expand(env.num_envs, -1)
+    plug_frame_offset_w_tensor = plug_frame_offset_w_tensor.expand(env.num_envs, -1)
     plug_frame_quat_tip = _quat_from_rpy_offset_deg(
         plug_frame_rpy_offset_deg,
         dtype=tcp_pos_w.dtype,
@@ -283,6 +280,7 @@ def make_simple_nic_insert_state(
         tip_quat_tcp=tip_quat_tcp,
         insertion_ref_pos_tip=insertion_ref_pos_tip,
         plug_frame_pos_tip=plug_frame_pos_tip,
+        plug_frame_offset_w=plug_frame_offset_w_tensor,
         plug_frame_quat_tip=plug_frame_quat_tip,
     )
 
@@ -322,7 +320,7 @@ def compute_simple_nic_insert_oracle(
     tcp_quat_w = robot.data.body_quat_w[:, tcp_id, :]
     tip_pos_w = robot.data.body_pos_w[:, tip_id, :]
     tip_quat_w = robot.data.body_quat_w[:, tip_id, :]
-    plug_frame_pos_w = tip_pos_w + math_utils.quat_apply(tip_quat_w, state.plug_frame_pos_tip)
+    plug_frame_pos_w = tip_pos_w + math_utils.quat_apply(tip_quat_w, state.plug_frame_pos_tip) + state.plug_frame_offset_w
     plug_frame_quat_w = math_utils.quat_mul(tip_quat_w, state.plug_frame_quat_tip)
     tip_pos_tcp, tip_quat_tcp = math_utils.subtract_frame_transforms(
         tcp_pos_w,

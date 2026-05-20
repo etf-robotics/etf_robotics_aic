@@ -51,7 +51,7 @@ parser.add_argument(
     nargs=3,
     default=(0.0, 0.0, 0.0),
     metavar=("X", "Y", "Z"),
-    help="Extra calibrated plug-frame position offset in sfp_tip_link local frame, meters.",
+    help="Extra calibrated plug-frame position offset in world frame, meters.",
 )
 parser.add_argument(
     "--plug_frame_rpy_offset_deg",
@@ -176,7 +176,7 @@ class NicInsertFrameVisualizer:
         self.frame_scale = frame_scale
         self.robot = env.scene["robot"]
         self.nic_card = env.scene["nic_card"]
-        self.plug_frame_offset = torch.tensor(
+        self.plug_frame_offset_w = torch.tensor(
             plug_frame_offset,
             dtype=self.robot.data.body_pos_w.dtype,
             device=self.device,
@@ -345,12 +345,13 @@ class NicInsertFrameVisualizer:
             for label, (local_pos, local_quat) in self.tip_child_local_poses.items():
                 frames[label] = _compose_pose(tip_pos, tip_quat, local_pos, local_quat)
             plug_local_pos = self._plug_frame_pos_tip()
-            frames["robot.calibrated_plug_frame"] = _compose_pose(
+            plug_pos, plug_quat = _compose_pose(
                 tip_pos,
                 tip_quat,
                 plug_local_pos,
                 self.plug_frame_quat_tip,
             )
+            frames["robot.calibrated_plug_frame"] = (plug_pos + self.plug_frame_offset_w, plug_quat)
 
         desired = self._desired_tip_frame(frames)
         if desired is not None:
@@ -393,7 +394,7 @@ class NicInsertFrameVisualizer:
             base = torch.zeros(3, dtype=self.robot.data.body_pos_w.dtype, device=self.device)
         else:
             base = 0.5 * (side_left[0] + side_right[0])
-        return base + self.plug_frame_offset
+        return base
 
     def _compute_port_seat_frame_only(self) -> tuple[torch.Tensor, torch.Tensor] | None:
         local = self.port_local_poses.get("port.seat_link")
@@ -427,8 +428,9 @@ class NicInsertFrameVisualizer:
         for name, (local_pos, _) in sorted(self.tip_child_local_poses.items()):
             print(f"  - {name}: {_fmt_vec(local_pos)}")
         print(
-            "[INFO] Calibrated plug frame in sfp_tip_link frame: "
-            f"pos={_fmt_vec(self._plug_frame_pos_tip())}, "
+            "[INFO] Calibrated plug frame offsets: "
+            f"base_pos_tip={_fmt_vec(self._plug_frame_pos_tip())}, "
+            f"world_offset={_fmt_vec(self.plug_frame_offset_w)}, "
             f"rpy_offset_deg={self.plug_frame_rpy_offset_deg}"
         )
         print("[INFO] Point colors: cyan=port, magenta=module keypoints, green=derived/target")
@@ -474,13 +476,13 @@ def main() -> None:
             env,
             approach_offset_local=tuple(args_cli.approach_offset),
             use_tooth_top_alignment=not args_cli.disable_tooth_top_alignment,
-            plug_frame_offset_tip=tuple(args_cli.plug_frame_offset),
+            plug_frame_offset_w=tuple(args_cli.plug_frame_offset),
             plug_frame_rpy_offset_deg=tuple(args_cli.plug_frame_rpy_offset_deg),
             target_offset_local=tuple(args_cli.target_offset),
         )
         oracle_state = oracle.make_simple_nic_insert_state(
             env,
-            plug_frame_offset_tip=tuple(args_cli.plug_frame_offset),
+            plug_frame_offset_w=tuple(args_cli.plug_frame_offset),
             plug_frame_rpy_offset_deg=tuple(args_cli.plug_frame_rpy_offset_deg),
         )
         print("[INFO] Driving frames with simple NIC insertion oracle.")
