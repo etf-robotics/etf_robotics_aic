@@ -212,6 +212,11 @@ def compute_simple_nic_insert_world_targets(
     port_x = _normalize_rows(math_utils.quat_apply(card_quat, targets.port_x_root))
     port_y = _normalize_rows(math_utils.quat_apply(card_quat, targets.port_y_root))
     port_z = _normalize_rows(math_utils.quat_apply(card_quat, targets.port_z_root))
+    # The SFP module must enter the port reversed relative to the port-front
+    # left/right frame.  Keep the insertion axis (+Y) and all target centers
+    # unchanged, but rotate the controlled target frame 180 deg around +Y.
+    port_x = -port_x
+    port_z = -port_z
     front_quat = _quat_from_frame_axes(port_x, port_y, port_z)
     path = final - approach
     path_length = torch.linalg.norm(path, dim=1, keepdim=True).clamp_min(1.0e-9)

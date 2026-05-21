@@ -15,7 +15,7 @@ parser.add_argument(
     "--approach_offset",
     type=float,
     nargs=3,
-    default=(0.0, -0.10, 0.0),
+    default=(0.0, -0.05, 0.0),
     metavar=("X", "Y", "Z"),
     help=(
         "Approach offset in the sfp_port_0_link local frame, meters. "
@@ -26,7 +26,7 @@ parser.add_argument(
     "--front_target_xz_offset",
     type=float,
     nargs=2,
-    default=(0.0, 0.0),
+    default=(0.0, 0.004),
     metavar=("X", "Z"),
     help="Extra front target offset in the port X/Z plane, meters. Y remains the insertion direction.",
 )
@@ -56,8 +56,8 @@ parser.add_argument("--rot_gain", type=float, default=0.2)
 parser.add_argument("--max_pos_delta", type=float, default=0.020)
 parser.add_argument("--insert_max_pos_delta", type=float, default=0.02)
 parser.add_argument("--max_rot_delta", type=float, default=2.5)
-parser.add_argument("--hold_steps", type=int, default=60)
-parser.add_argument("--log_every", type=int, default=1, help="0 disables periodic logging.")
+parser.add_argument("--hold_steps", type=int, default=30)
+parser.add_argument("--log_every", type=int, default=5, help="0 disables periodic logging.")
 parser.add_argument(
     "--log_path_xy_error",
     action="store_true",
@@ -74,7 +74,7 @@ parser.add_argument(
 parser.add_argument(
     "--disable_point_log",
     action="store_true",
-    default=False,
+    default=True,
     help="Disable the per-step JSONL point-position log.",
 )
 parser.add_argument(
@@ -232,7 +232,7 @@ def main() -> None:
     print(f"[INFO] Action scale: {action_scale[0].detach().cpu().tolist()}")
     if not args_cli.disable_start_joint_reset:
         print(f"[INFO] start_joint_pos: {tuple(args_cli.start_joint_pos)}")
-    print("[INFO] front-frame mapping: plug-front +X -> port-front right, sfp_tip_link -Z -> port +Y insertion")
+    print("[INFO] front-frame mapping: plug-front +X -> -port-front X, sfp_tip_link -Z -> port +Y insertion")
     print(
         "[INFO] insert orientation gate: "
         f"{args_cli.insert_orientation_threshold_deg:.2f} deg, "

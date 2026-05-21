@@ -71,8 +71,8 @@ class AICTaskSceneCfg(InteractiveSceneCfg):
             ),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 enabled_self_collisions=True,
-                solver_position_iteration_count=64,
-                solver_velocity_iteration_count=8,
+                solver_position_iteration_count=32,
+                solver_velocity_iteration_count=16,
             ),
             activate_contact_sensors=False,
         ),
@@ -308,7 +308,7 @@ class ActionsCfg:
 class EventCfg:
     pass
     """Configuration for events."""
-'''
+
     reset_robot_joints = EventTerm(
         func=mdp.reset_joints_by_offset,
         mode="reset",
@@ -372,7 +372,7 @@ class EventCfg:
             ],
         },
     )
-'''
+
 
 @configclass
 class TerminationsCfg:
