@@ -87,7 +87,7 @@ parser.add_argument(
     "--start_joint_pos",
     type=float,
     nargs=6,
-    default=(0.45, -1.3542, -1.6648, -1.6933, 1.5710, 1.4110),
+    default=(0.55, -1.3642, -1.6648, -1.6933, 1.5710, 1.4110),
     metavar=("SHOULDER_PAN", "SHOULDER_LIFT", "ELBOW", "WRIST_1", "WRIST_2", "WRIST_3"),
     help="Deterministic UR5e start joints in radians, applied after env.reset().",
 )
@@ -302,6 +302,8 @@ def main() -> None:
                             f" ori_err={math.degrees(float(output.orientation_error[0])):.2f} deg"
                             f" x_axis_err={math.degrees(float(output.x_axis_error[0])):.2f} deg"
                             f" y_axis_err={math.degrees(float(output.y_axis_error[0])):.2f} deg"
+                            f" tcp_pos_err={float(output.tcp_position_error[0]):.4f} m"
+                            f" tcp_ori_err={math.degrees(float(output.tcp_orientation_error[0])):.2f} deg"
                             f" cmd_pos_b={_fmt_vec(output.processed_action[0, :3])}"
                             f" cmd_rot_b={float(torch.linalg.norm(output.processed_action[0, 3:6])):.4f}"
                         )
@@ -413,6 +415,8 @@ class _PointPositionLogger:
                     "orientation_error_deg": math.degrees(float(output.orientation_error[self.env_index])),
                     "x_axis_error_deg": math.degrees(float(output.x_axis_error[self.env_index])),
                     "y_axis_error_deg": math.degrees(float(output.y_axis_error[self.env_index])),
+                    "tcp_position_error": float(output.tcp_position_error[self.env_index]),
+                    "tcp_orientation_error_deg": math.degrees(float(output.tcp_orientation_error[self.env_index])),
                 },
             }
         )

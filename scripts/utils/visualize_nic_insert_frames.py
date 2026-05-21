@@ -57,7 +57,7 @@ parser.add_argument(
     "--start_joint_pos",
     type=float,
     nargs=6,
-    default=(0.45, -1.3542, -1.6648, -1.6933, 1.5710, 1.4110),
+    default=(0.05, -1.3542, -1.6648, -1.33, 1.5710, 1.9110),
     metavar=("SHOULDER_PAN", "SHOULDER_LIFT", "ELBOW", "WRIST_1", "WRIST_2", "WRIST_3"),
     help="Deterministic UR5e start joints in radians, applied after env.reset().",
 )

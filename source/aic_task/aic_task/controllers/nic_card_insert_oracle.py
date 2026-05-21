@@ -104,6 +104,8 @@ class SimpleNicInsertOracleOutput:
     orientation_error: torch.Tensor
     x_axis_error: torch.Tensor
     y_axis_error: torch.Tensor
+    tcp_position_error: torch.Tensor
+    tcp_orientation_error: torch.Tensor
     phase: torch.Tensor
     insert_fraction: torch.Tensor
 
@@ -381,6 +383,8 @@ def compute_simple_nic_insert_oracle(
     desired_tip_pos_w = target_front_center_w - math_utils.quat_apply(desired_tip_quat_w, state.front_center_pos_tip)
     desired_tcp_quat_w = math_utils.quat_mul(desired_tip_quat_w, math_utils.quat_inv(tip_quat_tcp))
     desired_tcp_pos_w = desired_tip_pos_w - math_utils.quat_apply(desired_tcp_quat_w, tip_pos_tcp)
+    tcp_position_error = torch.linalg.norm(desired_tcp_pos_w - tcp_pos_w, dim=1)
+    tcp_orientation_error = math_utils.quat_error_magnitude(tcp_quat_w, desired_tcp_quat_w)
     processed_action = _relative_ik_processed_action(
         robot,
         tcp_pos_w,
@@ -413,6 +417,8 @@ def compute_simple_nic_insert_oracle(
         orientation_error=orientation_error,
         x_axis_error=x_axis_error,
         y_axis_error=y_axis_error,
+        tcp_position_error=tcp_position_error,
+        tcp_orientation_error=tcp_orientation_error,
         phase=state.phase.clone(),
         insert_fraction=insert_fraction.squeeze(1),
     )

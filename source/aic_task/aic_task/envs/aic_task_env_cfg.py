@@ -71,7 +71,7 @@ class AICTaskSceneCfg(InteractiveSceneCfg):
             ),
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(
                 enabled_self_collisions=True,
-                solver_position_iteration_count=16,
+                solver_position_iteration_count=64,
                 solver_velocity_iteration_count=8,
             ),
             activate_contact_sensors=False,
@@ -590,7 +590,7 @@ class AICTaskEnvCfg(ManagerBasedRLEnvCfg):
         self.episode_length_s = 200.0
         self.sim.dt = 1.0 / 120.0
         # ── PhysX GPU baferi ─────────────────────────────────────────────
-        self.sim.physx.gpu_collision_stack_size  = 128 * 1024 * 1024   # već imaš
+        self.sim.physx.gpu_collision_stack_size  = 128 * 1024 * 1024
         # self.sim.gravity = (0.0, 0.0, 3)
         self.viewer.eye = (8.0, 0.0, 5.0)
 
@@ -632,7 +632,7 @@ class AICTaskEnvCfg(ManagerBasedRLEnvCfg):
                 command_type="pose",
                 use_relative_mode=True,
                 ik_method="dls",
-                ik_params={"lambda_val": 0.05},
+                ik_params={"lambda_val": 0.01},
             ),
             scale=(0.015, 0.015, 0.015, 0.025, 0.025, 0.025),
         )
