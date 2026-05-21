@@ -1,8 +1,13 @@
-"""Simple demo oracle for inserting the SFP module into NIC port 0.
+"""Front-keypoint oracle for inserting the SFP module into NIC port 0.
 
-This controller is intentionally small and geometry-first.  It reads the fixed
-``sfp_port_0_link`` pose once in the NIC-card root frame, then recomputes world
-targets from the live NIC-card rigid body pose every control step.
+The controlled geometry is the front edge of the plug:
+
+* ``sfp_tip_front_left``
+* ``sfp_tip_front_right``
+
+The target geometry is the matching front edge of the port opening.  The
+left/right points define the frame position and width axis, while the plug
+insertion axis is ``sfp_tip_link`` local ``-Z`` aligned to port ``+Y``.
 """
 
 from __future__ import annotations
@@ -34,56 +39,71 @@ class SimpleNicInsertPhase(IntEnum):
 
 @dataclass
 class SimpleNicInsertTargets:
-    """Fixed port geometry cached in the live NIC-card root frame."""
+    """Fixed port-front geometry cached in the NIC-card root frame."""
 
-    seat_pos_root: torch.Tensor
-    seat_quat_root: torch.Tensor
+    entry_front_center_root: torch.Tensor
+    final_front_center_root: torch.Tensor
+    approach_front_center_root: torch.Tensor
+    port_x_root: torch.Tensor
+    port_y_root: torch.Tensor
+    port_z_root: torch.Tensor
+    front_target_xz_offset: tuple[float, float]
     approach_offset_local: tuple[float, float, float]
 
 
 @dataclass
 class SimpleNicInsertWorldTargets:
-    """World-frame port targets computed from the current NIC-card pose."""
+    """World-frame port/front targets computed from the live NIC-card pose."""
 
-    seat_w: torch.Tensor
-    approach_w: torch.Tensor
+    entry_front_center_w: torch.Tensor
+    final_front_center_w: torch.Tensor
+    approach_front_center_w: torch.Tensor
     path_w: torch.Tensor
     path_length: torch.Tensor
-    seat_quat_w: torch.Tensor
+    port_x_w: torch.Tensor
+    port_y_w: torch.Tensor
+    port_z_w: torch.Tensor
+    front_quat_w: torch.Tensor
 
 
 @dataclass
 class SimpleNicInsertState:
-    """Mutable state for the simple insertion sequence."""
+    """Mutable state and plug-front calibration."""
 
     phase: torch.Tensor
     insert_distance: torch.Tensor
     hold_steps: torch.Tensor
-    desired_tcp_quat_w: torch.Tensor
     tip_pos_tcp: torch.Tensor
     tip_quat_tcp: torch.Tensor
-    insertion_ref_pos_tip: torch.Tensor
-    plug_frame_pos_tip: torch.Tensor
-    plug_frame_offset_w: torch.Tensor
-    plug_frame_quat_tip: torch.Tensor
+    front_center_pos_tip: torch.Tensor
+    front_quat_tip: torch.Tensor
+    front_left_pos_tip: torch.Tensor
+    front_right_pos_tip: torch.Tensor
+    tip_width: torch.Tensor
 
 
 @dataclass
 class SimpleNicInsertOracleOutput:
-    """Action and diagnostics for one demo control step."""
+    """Action and diagnostics for one control step."""
 
     raw_action: torch.Tensor
     processed_action: torch.Tensor
-    target_tip_pos_w: torch.Tensor
-    tip_pos_w: torch.Tensor
-    tip_error: torch.Tensor
-    lateral_xy_error: torch.Tensor
+    front_center_w: torch.Tensor
+    front_left_w: torch.Tensor
+    front_right_w: torch.Tensor
+    target_front_center_w: torch.Tensor
+    target_front_left_w: torch.Tensor
+    target_front_right_w: torch.Tensor
+    front_center_error: torch.Tensor
+    front_left_error: torch.Tensor
+    front_right_error: torch.Tensor
     path_lateral_error: torch.Tensor
     path_error_local: torch.Tensor
     path_distance: torch.Tensor
     target_path_distance: torch.Tensor
     orientation_error: torch.Tensor
-    position_scale: torch.Tensor
+    x_axis_error: torch.Tensor
+    y_axis_error: torch.Tensor
     phase: torch.Tensor
     insert_fraction: torch.Tensor
 
@@ -102,89 +122,73 @@ def make_simple_nic_insert_targets(
     *,
     target_name: str = "nic_card",
     seat_path: str = "/sfp_port_0_link",
-    use_corner_centerline: bool = True,
-    use_tooth_top_alignment: bool = True,
-    tip_body: str = "sfp_tip_link",
-    insertion_ref_child_names: tuple[str, str] = ("sfp_tip_side_left", "sfp_tip_side_right"),
-    tooth_child_name: str = "sfp_tip_tooth_tip",
-    plug_frame_offset_w: tuple[float, float, float] = (0.0, 0.0, 0.0),
-    plug_frame_rpy_offset_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
-    target_offset_local: tuple[float, float, float] = (0.0, 0.0, 0.0),
-    corner_paths: tuple[str, str, str, str] = (
-        "/sfp_port_0_link/sfp_port_0_link_entrance/sfp_port_0_front_left",
-        "/sfp_port_0_link/sfp_port_0_link_entrance/sfp_port_0_back_left",
-        "/sfp_port_0_link/sfp_port_0_link_entrance/sfp_port_0_back_right",
-        "/sfp_port_0_link/sfp_port_0_link_entrance/sfp_port_0_front_right",
-    ),
+    front_left_path: str = "/sfp_port_0_link/sfp_port_0_link_entrance/sfp_port_0_front_left",
+    front_right_path: str = "/sfp_port_0_link/sfp_port_0_link_entrance/sfp_port_0_front_right",
+    front_target_xz_offset: tuple[float, float] = (0.0, 0.0),
     approach_offset_local: tuple[float, float, float] = (0.0, -0.10, 0.0),
 ) -> SimpleNicInsertTargets:
-    """Resolve the fixed port seat pose from USD in the NIC-card root frame.
+    """Resolve the port-front target line in the NIC-card root frame.
 
-    ``approach_offset_local`` is expressed in the ``sfp_port_0_link`` frame.
-    Since insertion is along port-local ``+Y``, the default backs the plug out
-    along ``-Y`` by 10 cm before moving to the seat.  World-frame targets are
-    recomputed during control from ``env.scene[target_name].data.root_*_w``.
+    ``front_target_xz_offset`` is expressed in the computed port-front X/Z
+    plane.  Y is reserved for insertion depth and is intentionally not exposed
+    as a target correction.
     """
     target = env.scene[target_name]
-    robot = env.scene["robot"]
     device = target.data.root_pos_w.device
     dtype = target.data.root_pos_w.dtype
 
-    seat_positions_root = []
-    seat_quats_root = []
+    entry_centers = []
+    final_centers = []
+    approach_centers = []
+    port_x_axes = []
+    port_y_axes = []
+    port_z_axes = []
     for env_index in range(env.num_envs):
         root_path = resolve_asset_root_prim_path(target, env_index)
         seat_pos_root, seat_quat_root = _seat_pose_in_asset_root(root_path, seat_path)
-        if use_corner_centerline:
-            seat_pos_root = _centerline_seat_pos_from_corners(
-                root_path,
-                seat_pos_root,
-                seat_quat_root,
-                corner_paths,
-            )
-        if use_tooth_top_alignment:
-            try:
-                insertion_ref_pos_tip = _tip_child_midpoint_in_tip(
-                    robot,
-                    env_index,
-                    tip_body,
-                    insertion_ref_child_names,
-                    dtype=torch.float64,
-                    device="cpu",
-                )
-                tooth_pos_tip = _tip_child_pos_in_tip(
-                    robot,
-                    env_index,
-                    tip_body,
-                    tooth_child_name,
-                    dtype=torch.float64,
-                    device="cpu",
-                )
-                plug_frame_quat_tip = _quat_from_rpy_offset_deg(
-                    plug_frame_rpy_offset_deg,
-                    dtype=torch.float64,
-                    device="cpu",
-                    num_envs=1,
-                )[0]
-                seat_pos_root = _tooth_top_aligned_seat_pos_from_corners(
-                    root_path,
-                    seat_pos_root,
-                    seat_quat_root,
-                    corner_paths,
-                    tooth_pos_tip=tuple(float(value) for value in tooth_pos_tip.tolist()),
-                    plug_frame_pos_tip=tuple(float(value) for value in insertion_ref_pos_tip.tolist()),
-                    plug_frame_quat_tip=tuple(float(value) for value in plug_frame_quat_tip.tolist()),
-                )
-            except Exception as exc:
-                print(f"[WARN] Could not derive tooth/top-aligned target line; using {seat_pos_root}: {exc}")
-        if target_offset_local != (0.0, 0.0, 0.0):
-            seat_pos_root = _offset_pos_in_local_frame(seat_pos_root, seat_quat_root, target_offset_local)
-        seat_positions_root.append(seat_pos_root)
-        seat_quats_root.append(seat_quat_root)
+        front_left_root = _prim_position_in_asset_root(root_path, front_left_path)
+        front_right_root = _prim_position_in_asset_root(root_path, front_right_path)
+
+        seat_pos = torch.tensor(seat_pos_root, dtype=torch.float64)
+        seat_quat = torch.tensor(seat_quat_root, dtype=torch.float64).unsqueeze(0)
+        front_left = torch.tensor(front_left_root, dtype=torch.float64)
+        front_right = torch.tensor(front_right_root, dtype=torch.float64)
+
+        port_y = _normalize(
+            math_utils.quat_apply(seat_quat, torch.tensor([[0.0, 1.0, 0.0]], dtype=torch.float64))[0]
+        )
+        port_x = _normalize(front_right - front_left)
+        port_x = _normalize(port_x - torch.dot(port_x, port_y) * port_y)
+        port_z = _normalize(torch.linalg.cross(port_x, port_y, dim=0))
+        port_y = _normalize(torch.linalg.cross(port_z, port_x, dim=0))
+
+        entry_center = 0.5 * (front_left + front_right)
+        entry_center = entry_center + float(front_target_xz_offset[0]) * port_x
+        entry_center = entry_center + float(front_target_xz_offset[1]) * port_z
+        seat_depth = torch.dot(seat_pos - entry_center, port_y)
+        final_center = entry_center + seat_depth * port_y
+        approach_offset = (
+            float(approach_offset_local[0]) * port_x
+            + float(approach_offset_local[1]) * port_y
+            + float(approach_offset_local[2]) * port_z
+        )
+        approach_center = entry_center + approach_offset
+
+        entry_centers.append(entry_center.tolist())
+        final_centers.append(final_center.tolist())
+        approach_centers.append(approach_center.tolist())
+        port_x_axes.append(port_x.tolist())
+        port_y_axes.append(port_y.tolist())
+        port_z_axes.append(port_z.tolist())
 
     return SimpleNicInsertTargets(
-        seat_pos_root=torch.tensor(seat_positions_root, dtype=dtype, device=device),
-        seat_quat_root=torch.tensor(seat_quats_root, dtype=dtype, device=device),
+        entry_front_center_root=torch.tensor(entry_centers, dtype=dtype, device=device),
+        final_front_center_root=torch.tensor(final_centers, dtype=dtype, device=device),
+        approach_front_center_root=torch.tensor(approach_centers, dtype=dtype, device=device),
+        port_x_root=torch.tensor(port_x_axes, dtype=dtype, device=device),
+        port_y_root=torch.tensor(port_y_axes, dtype=dtype, device=device),
+        port_z_root=torch.tensor(port_z_axes, dtype=dtype, device=device),
+        front_target_xz_offset=front_target_xz_offset,
         approach_offset_local=approach_offset_local,
     )
 
@@ -195,30 +199,30 @@ def compute_simple_nic_insert_world_targets(
     *,
     target_name: str = "nic_card",
 ) -> SimpleNicInsertWorldTargets:
-    """Compute current world-frame seat and approach targets from live card state."""
+    """Compute the live world-frame port-front target line."""
     target = env.scene[target_name]
-    seat_w = target.data.root_pos_w + math_utils.quat_apply(
-        target.data.root_quat_w,
-        targets.seat_pos_root,
-    )
-    seat_quat_w = math_utils.quat_mul(target.data.root_quat_w, targets.seat_quat_root)
-    approach_offset = torch.tensor(
-        targets.approach_offset_local,
-        dtype=seat_w.dtype,
-        device=seat_w.device,
-    ).unsqueeze(0)
-    approach_w = seat_w + math_utils.quat_apply(
-        seat_quat_w,
-        approach_offset.expand(env.num_envs, -1),
-    )
-    path_w = seat_w - approach_w
-    path_length = torch.linalg.norm(path_w, dim=1, keepdim=True).clamp_min(1.0e-9)
+    card_pos = target.data.root_pos_w
+    card_quat = target.data.root_quat_w
+
+    entry = _root_point_to_world(card_pos, card_quat, targets.entry_front_center_root)
+    final = _root_point_to_world(card_pos, card_quat, targets.final_front_center_root)
+    approach = _root_point_to_world(card_pos, card_quat, targets.approach_front_center_root)
+    port_x = _normalize_rows(math_utils.quat_apply(card_quat, targets.port_x_root))
+    port_y = _normalize_rows(math_utils.quat_apply(card_quat, targets.port_y_root))
+    port_z = _normalize_rows(math_utils.quat_apply(card_quat, targets.port_z_root))
+    front_quat = _quat_from_frame_axes(port_x, port_y, port_z)
+    path = final - approach
+    path_length = torch.linalg.norm(path, dim=1, keepdim=True).clamp_min(1.0e-9)
     return SimpleNicInsertWorldTargets(
-        seat_w=seat_w,
-        approach_w=approach_w,
-        path_w=path_w,
+        entry_front_center_w=entry,
+        final_front_center_w=final,
+        approach_front_center_w=approach,
+        path_w=path,
         path_length=path_length,
-        seat_quat_w=seat_quat_w,
+        port_x_w=port_x,
+        port_y_w=port_y,
+        port_z_w=port_z,
+        front_quat_w=front_quat,
     )
 
 
@@ -227,11 +231,9 @@ def make_simple_nic_insert_state(
     *,
     tcp_body: str = "gripper_tcp",
     tip_body: str = "sfp_tip_link",
-    insertion_ref_child_names: tuple[str, str] = ("sfp_tip_side_left", "sfp_tip_side_right"),
-    plug_frame_offset_w: tuple[float, float, float] = (0.0, 0.0, 0.0),
-    plug_frame_rpy_offset_deg: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    front_child_names: tuple[str, str] = ("sfp_tip_front_left", "sfp_tip_front_right"),
 ) -> SimpleNicInsertState:
-    """Capture the initial controlled-body orientation and calibrated plug frame."""
+    """Capture the front-frame calibration in ``sfp_tip_link`` coordinates."""
     robot = env.scene["robot"]
     tcp_id = _first_body_id(robot, tcp_body)
     tip_id = _first_body_id(robot, tip_body)
@@ -245,27 +247,24 @@ def make_simple_nic_insert_state(
         tip_pos_w,
         tip_quat_w,
     )
-    insertion_ref_pos_tip = _insertion_ref_pos_in_tip(
+    left_pos, _ = _tip_child_pose_in_tip_batch(
         robot,
         env.num_envs,
         tip_body,
-        insertion_ref_child_names,
+        front_child_names[0],
         dtype=tcp_pos_w.dtype,
         device=env.device,
     )
-    plug_frame_pos_tip = insertion_ref_pos_tip
-    plug_frame_offset_w_tensor = torch.tensor(
-        plug_frame_offset_w,
+    right_pos, _ = _tip_child_pose_in_tip_batch(
+        robot,
+        env.num_envs,
+        tip_body,
+        front_child_names[1],
         dtype=tcp_pos_w.dtype,
         device=env.device,
-    ).unsqueeze(0)
-    plug_frame_offset_w_tensor = plug_frame_offset_w_tensor.expand(env.num_envs, -1)
-    plug_frame_quat_tip = _quat_from_rpy_offset_deg(
-        plug_frame_rpy_offset_deg,
-        dtype=tcp_pos_w.dtype,
-        device=env.device,
-        num_envs=env.num_envs,
     )
+    front_center = 0.5 * (left_pos + right_pos)
+    front_quat = _front_frame_quat_from_points(left_pos, right_pos)
     return SimpleNicInsertState(
         phase=torch.full(
             (env.num_envs,),
@@ -275,13 +274,13 @@ def make_simple_nic_insert_state(
         ),
         insert_distance=torch.zeros((env.num_envs, 1), dtype=tcp_pos_w.dtype, device=env.device),
         hold_steps=torch.zeros((env.num_envs,), dtype=torch.long, device=env.device),
-        desired_tcp_quat_w=tcp_quat_w,
         tip_pos_tcp=tip_pos_tcp,
         tip_quat_tcp=tip_quat_tcp,
-        insertion_ref_pos_tip=insertion_ref_pos_tip,
-        plug_frame_pos_tip=plug_frame_pos_tip,
-        plug_frame_offset_w=plug_frame_offset_w_tensor,
-        plug_frame_quat_tip=plug_frame_quat_tip,
+        front_center_pos_tip=front_center,
+        front_quat_tip=front_quat,
+        front_left_pos_tip=left_pos,
+        front_right_pos_tip=right_pos,
+        tip_width=torch.linalg.norm(right_pos - left_pos, dim=1, keepdim=True),
     )
 
 
@@ -293,26 +292,20 @@ def compute_simple_nic_insert_oracle(
     *,
     tcp_body: str = "gripper_tcp",
     tip_body: str = "sfp_tip_link",
-    pos_gain: float = 0.8,
-    rot_gain: float = 0.5,
-    max_pos_delta: float = 0.012,
+    pos_gain: float = 1.2,
+    rot_gain: float = 0.2,
+    max_pos_delta: float = 0.020,
     insert_max_pos_delta: float = 0.002,
     max_rot_delta: float = 0.025,
     approach_threshold: float = 0.015,
-    insert_lateral_threshold: float = 0.003,
-    insert_orientation_threshold: float = math.radians(2.0),
-    insert_misaligned_pos_scale: float = 0.2,
-    insert_alignment_only: bool = False,
-    insert_rot_scale: float = 0.05,
+    insert_lateral_threshold: float = 0.010,
+    insert_orientation_threshold: float = math.radians(4.0),
     insert_lookahead: float = 0.002,
-    insert_recenter_backoff: float = 0.003,
-    insert_lateral_correction_scale: float = 1.0,
     final_threshold: float = 0.003,
     insert_speed: float = 0.010,
     step_dt: float = 1.0 / 30.0,
-    hold_orientation: bool = True,
 ) -> SimpleNicInsertOracleOutput:
-    """Compute one relative-IK action for the simple approach-then-insert demo."""
+    """Compute one relative-IK action for the front-point insertion oracle."""
     robot = env.scene["robot"]
     tcp_id = _first_body_id(robot, tcp_body)
     tip_id = _first_body_id(robot, tip_body)
@@ -320,8 +313,6 @@ def compute_simple_nic_insert_oracle(
     tcp_quat_w = robot.data.body_quat_w[:, tcp_id, :]
     tip_pos_w = robot.data.body_pos_w[:, tip_id, :]
     tip_quat_w = robot.data.body_quat_w[:, tip_id, :]
-    plug_frame_pos_w = tip_pos_w + math_utils.quat_apply(tip_quat_w, state.plug_frame_pos_tip) + state.plug_frame_offset_w
-    plug_frame_quat_w = math_utils.quat_mul(tip_quat_w, state.plug_frame_quat_tip)
     tip_pos_tcp, tip_quat_tcp = math_utils.subtract_frame_transforms(
         tcp_pos_w,
         tcp_quat_w,
@@ -330,66 +321,66 @@ def compute_simple_nic_insert_oracle(
     )
     state.tip_pos_tcp[:] = tip_pos_tcp
     state.tip_quat_tcp[:] = tip_quat_tcp
+
     world_targets = compute_simple_nic_insert_world_targets(env, targets)
+    front_center_w, front_quat_w, front_left_w, front_right_w = _live_front_geometry(tip_pos_w, tip_quat_w, state)
 
-    if hold_orientation:
-        desired_plug_quat_w = _desired_tip_quat_from_port(world_targets.seat_quat_w)
-        desired_tip_quat_w = math_utils.quat_mul(
-            desired_plug_quat_w,
-            math_utils.quat_inv(state.plug_frame_quat_tip),
-        )
-        desired_tcp_quat_w = _desired_tcp_quat_from_tip(desired_tip_quat_w, tip_quat_tcp)
-        orientation_error = math_utils.quat_error_magnitude(plug_frame_quat_w, desired_plug_quat_w)
-    else:
-        desired_tcp_quat_w = tcp_quat_w
-        orientation_error = torch.zeros((env.num_envs,), dtype=tcp_pos_w.dtype, device=tcp_pos_w.device)
+    insert_fraction, target_front_center_w = _current_target_front_center(world_targets, state)
+    target_front_left_w, target_front_right_w = _target_front_points(world_targets, state, target_front_center_w)
+    center_error = torch.linalg.norm(target_front_center_w - front_center_w, dim=1)
+    path_distance, closest_w, path_lateral_error = _project_front_to_path(world_targets, front_center_w)
+    path_error_local = _path_error_in_front_frame(world_targets, front_center_w, closest_w)
+    orientation_error = math_utils.quat_error_magnitude(front_quat_w, world_targets.front_quat_w)
+    x_axis_error = _axis_angle(
+        _local_axis_w(front_quat_w, (1.0, 0.0, 0.0)),
+        world_targets.port_x_w,
+    )
+    y_axis_error = _axis_angle(
+        _local_axis_w(front_quat_w, (0.0, 1.0, 0.0)),
+        world_targets.port_y_w,
+    )
 
-    insert_fraction, target_tip_pos_w = _current_target_tip_pos(world_targets, state)
-    tip_error = torch.linalg.norm(target_tip_pos_w - plug_frame_pos_w, dim=1)
-    lateral_xy_error = _world_xy_error(plug_frame_pos_w, target_tip_pos_w)
-    path_distance, closest_w, path_lateral_error = _project_tip_to_path(world_targets, plug_frame_pos_w)
-    path_error_local = _path_error_in_port_frame(world_targets, plug_frame_pos_w, closest_w)
-    reached_approach = (state.phase == int(SimpleNicInsertPhase.APPROACH)) & (tip_error <= approach_threshold)
+    reached_approach = (
+        (state.phase == int(SimpleNicInsertPhase.APPROACH))
+        & (center_error <= approach_threshold)
+        & (orientation_error <= insert_orientation_threshold)
+    )
     state.phase[reached_approach] = int(SimpleNicInsertPhase.INSERT)
 
     insert_mask = state.phase == int(SimpleNicInsertPhase.INSERT)
-    advance_mask = insert_mask & (path_lateral_error <= insert_lateral_threshold)
-    recenter_mask = insert_mask & (path_lateral_error > insert_lateral_threshold)
+    advance_mask = (
+        insert_mask
+        & (path_lateral_error <= insert_lateral_threshold)
+        & (orientation_error <= insert_orientation_threshold)
+    )
     state.insert_distance[insert_mask] = path_distance[insert_mask]
-    if insert_recenter_backoff > 0.0:
-        state.insert_distance[recenter_mask] = torch.clamp(
-            path_distance[recenter_mask] - insert_recenter_backoff,
-            min=0.0,
-        )
-    if insert_alignment_only:
-        advance_mask[:] = False
     step_distance = max(insert_speed * step_dt, insert_lookahead)
     state.insert_distance[advance_mask] = path_distance[advance_mask] + step_distance
     state.insert_distance[:] = torch.minimum(state.insert_distance, world_targets.path_length)
 
-    insert_fraction, target_tip_pos_w = _current_target_tip_pos(world_targets, state)
-    tip_error = torch.linalg.norm(target_tip_pos_w - plug_frame_pos_w, dim=1)
-    lateral_xy_error = _world_xy_error(plug_frame_pos_w, target_tip_pos_w)
-    path_distance, closest_w, path_lateral_error = _project_tip_to_path(world_targets, plug_frame_pos_w)
-    path_error_local = _path_error_in_port_frame(world_targets, plug_frame_pos_w, closest_w)
+    insert_fraction, target_front_center_w = _current_target_front_center(world_targets, state)
+    target_front_left_w, target_front_right_w = _target_front_points(world_targets, state, target_front_center_w)
+    center_error = torch.linalg.norm(target_front_center_w - front_center_w, dim=1)
+    left_error = torch.linalg.norm(target_front_left_w - front_left_w, dim=1)
+    right_error = torch.linalg.norm(target_front_right_w - front_right_w, dim=1)
+    path_distance, closest_w, path_lateral_error = _project_front_to_path(world_targets, front_center_w)
+    path_error_local = _path_error_in_front_frame(world_targets, front_center_w, closest_w)
 
     reached_final = (
         (state.phase == int(SimpleNicInsertPhase.INSERT))
         & (insert_fraction.squeeze(1) >= 1.0)
-        & (tip_error <= final_threshold)
+        & (center_error <= final_threshold)
     )
     state.phase[reached_final] = int(SimpleNicInsertPhase.HOLD)
     state.hold_steps[state.phase == int(SimpleNicInsertPhase.HOLD)] += 1
 
-    position_error_w = target_tip_pos_w - plug_frame_pos_w
-    if bool(insert_mask.any()) and insert_lateral_correction_scale < 1.0:
-        path_axis_w = world_targets.path_w / world_targets.path_length
-        path_error_w = torch.sum(position_error_w * path_axis_w, dim=1, keepdim=True) * path_axis_w
-        lateral_error_w = position_error_w - path_error_w
-        insert_lateral_scale = max(0.0, insert_lateral_correction_scale)
-        insert_position_error_w = path_error_w + lateral_error_w * insert_lateral_scale
-        position_error_w = torch.where(insert_mask.unsqueeze(1), insert_position_error_w, position_error_w)
-    desired_tcp_pos_w = tcp_pos_w + position_error_w
+    desired_tip_quat_w = math_utils.quat_mul(
+        world_targets.front_quat_w,
+        math_utils.quat_inv(state.front_quat_tip),
+    )
+    desired_tip_pos_w = target_front_center_w - math_utils.quat_apply(desired_tip_quat_w, state.front_center_pos_tip)
+    desired_tcp_quat_w = math_utils.quat_mul(desired_tip_quat_w, math_utils.quat_inv(tip_quat_tcp))
+    desired_tcp_pos_w = desired_tip_pos_w - math_utils.quat_apply(desired_tcp_quat_w, tip_pos_tcp)
     processed_action = _relative_ik_processed_action(
         robot,
         tcp_pos_w,
@@ -398,85 +389,105 @@ def compute_simple_nic_insert_oracle(
         desired_tcp_quat_w,
         action_scale,
         pos_gain=pos_gain,
-        rot_gain=rot_gain if hold_orientation else 0.0,
+        rot_gain=rot_gain,
         max_pos_delta=insert_max_pos_delta if bool(insert_mask.any()) else max_pos_delta,
         max_rot_delta=max_rot_delta,
     )
-    position_scale = torch.ones((env.num_envs,), dtype=processed_action.dtype, device=processed_action.device)
-    if hold_orientation:
-        insert_action_mask = state.phase == int(SimpleNicInsertPhase.INSERT)
-        if insert_alignment_only:
-            position_scale[insert_action_mask] = 0.0
-        else:
-            processed_action[insert_action_mask, 3:6] *= insert_rot_scale
-        processed_action[:, 0:3] *= position_scale.unsqueeze(1)
     raw_action = processed_action / torch.clamp(action_scale, min=1.0e-9)
     return SimpleNicInsertOracleOutput(
         raw_action=raw_action,
         processed_action=processed_action,
-        target_tip_pos_w=target_tip_pos_w,
-        tip_pos_w=plug_frame_pos_w,
-        tip_error=tip_error,
-        lateral_xy_error=lateral_xy_error,
+        front_center_w=front_center_w,
+        front_left_w=front_left_w,
+        front_right_w=front_right_w,
+        target_front_center_w=target_front_center_w,
+        target_front_left_w=target_front_left_w,
+        target_front_right_w=target_front_right_w,
+        front_center_error=center_error,
+        front_left_error=left_error,
+        front_right_error=right_error,
         path_lateral_error=path_lateral_error,
         path_error_local=path_error_local,
         path_distance=path_distance.squeeze(1),
         target_path_distance=state.insert_distance.squeeze(1).clone(),
         orientation_error=orientation_error,
-        position_scale=position_scale,
+        x_axis_error=x_axis_error,
+        y_axis_error=y_axis_error,
         phase=state.phase.clone(),
         insert_fraction=insert_fraction.squeeze(1),
     )
 
 
-def _current_target_tip_pos(
+def _current_target_front_center(
     world_targets: SimpleNicInsertWorldTargets,
     state: SimpleNicInsertState,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     insert_fraction = (state.insert_distance / world_targets.path_length).clamp(0.0, 1.0)
-    insert_target_w = world_targets.approach_w + world_targets.path_w * insert_fraction
-    target_tip_pos_w = torch.where(
+    insert_target_w = world_targets.approach_front_center_w + world_targets.path_w * insert_fraction
+    target_w = torch.where(
         (state.phase == int(SimpleNicInsertPhase.APPROACH)).unsqueeze(1),
-        world_targets.approach_w,
+        world_targets.approach_front_center_w,
         insert_target_w,
     )
-    target_tip_pos_w = torch.where(
+    target_w = torch.where(
         (state.phase == int(SimpleNicInsertPhase.HOLD)).unsqueeze(1),
-        world_targets.seat_w,
-        target_tip_pos_w,
+        world_targets.final_front_center_w,
+        target_w,
     )
-    return insert_fraction, target_tip_pos_w
+    return insert_fraction, target_w
 
 
-def _world_xy_error(actual_w: torch.Tensor, target_w: torch.Tensor) -> torch.Tensor:
-    return torch.linalg.norm(actual_w[:, :2] - target_w[:, :2], dim=1)
-
-
-def _project_tip_to_path(
+def _target_front_points(
     world_targets: SimpleNicInsertWorldTargets,
+    state: SimpleNicInsertState,
+    center_w: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    half_width = 0.5 * state.tip_width
+    left = center_w - half_width * world_targets.port_x_w
+    right = center_w + half_width * world_targets.port_x_w
+    return left, right
+
+
+def _live_front_geometry(
     tip_pos_w: torch.Tensor,
+    tip_quat_w: torch.Tensor,
+    state: SimpleNicInsertState,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    center = tip_pos_w + math_utils.quat_apply(tip_quat_w, state.front_center_pos_tip)
+    quat = math_utils.quat_mul(tip_quat_w, state.front_quat_tip)
+    left = tip_pos_w + math_utils.quat_apply(tip_quat_w, state.front_left_pos_tip)
+    right = tip_pos_w + math_utils.quat_apply(tip_quat_w, state.front_right_pos_tip)
+    return center, quat, left, right
+
+
+def _project_front_to_path(
+    world_targets: SimpleNicInsertWorldTargets,
+    front_center_w: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     path_axis_w = world_targets.path_w / world_targets.path_length
-    tip_from_approach = tip_pos_w - world_targets.approach_w
-    path_distance = torch.sum(tip_from_approach * path_axis_w, dim=1, keepdim=True)
+    front_from_approach = front_center_w - world_targets.approach_front_center_w
+    path_distance = torch.sum(front_from_approach * path_axis_w, dim=1, keepdim=True)
     path_distance = torch.clamp(path_distance, min=0.0)
     path_distance = torch.minimum(path_distance, world_targets.path_length)
-    closest_w = world_targets.approach_w + path_axis_w * path_distance
-    path_lateral_error = torch.linalg.norm(tip_pos_w - closest_w, dim=1)
+    closest_w = world_targets.approach_front_center_w + path_axis_w * path_distance
+    path_lateral_error = torch.linalg.norm(front_center_w - closest_w, dim=1)
     return path_distance, closest_w, path_lateral_error
 
 
-def _path_error_in_port_frame(
+def _path_error_in_front_frame(
     world_targets: SimpleNicInsertWorldTargets,
-    tip_pos_w: torch.Tensor,
+    front_center_w: torch.Tensor,
     closest_w: torch.Tensor,
 ) -> torch.Tensor:
-    error_w = tip_pos_w - closest_w
-    return math_utils.quat_apply(math_utils.quat_inv(world_targets.seat_quat_w), error_w)
-
-
-def _desired_tcp_quat_from_tip(desired_tip_quat_w: torch.Tensor, tip_quat_tcp: torch.Tensor) -> torch.Tensor:
-    return math_utils.quat_mul(desired_tip_quat_w, math_utils.quat_inv(tip_quat_tcp))
+    error_w = front_center_w - closest_w
+    return torch.stack(
+        (
+            torch.sum(error_w * world_targets.port_x_w, dim=1),
+            torch.sum(error_w * world_targets.port_y_w, dim=1),
+            torch.sum(error_w * world_targets.port_z_w, dim=1),
+        ),
+        dim=1,
+    )
 
 
 def _seat_pose_in_asset_root(
@@ -522,95 +533,6 @@ def _seat_pose_in_asset_root(
     )
 
 
-def _centerline_seat_pos_from_corners(
-    asset_root_path: str,
-    seat_pos_root: tuple[float, float, float],
-    seat_quat_root: tuple[float, float, float, float],
-    corner_paths: tuple[str, str, str, str],
-) -> tuple[float, float, float]:
-    """Move the target line to the entrance corner center, keeping the seat insertion level."""
-    try:
-        corner_positions = [_prim_position_in_asset_root(asset_root_path, corner_path) for corner_path in corner_paths]
-    except Exception as exc:
-        print(f"[WARN] Could not derive port centerline from entrance corners; using {seat_pos_root}: {exc}")
-        return seat_pos_root
-
-    dtype = torch.float64
-    corner_center = torch.tensor(corner_positions, dtype=dtype).mean(dim=0)
-    seat_pos = torch.tensor(seat_pos_root, dtype=dtype)
-    seat_quat = torch.tensor(seat_quat_root, dtype=dtype).unsqueeze(0)
-    port_y = math_utils.quat_apply(seat_quat, torch.tensor([[0.0, 1.0, 0.0]], dtype=dtype))[0]
-    port_y = torch.nn.functional.normalize(port_y, dim=0)
-    seat_depth = torch.dot(seat_pos - corner_center, port_y)
-    centerline_seat = corner_center + seat_depth * port_y
-    return tuple(float(value) for value in centerline_seat.tolist())
-
-
-def _tooth_top_aligned_seat_pos_from_corners(
-    asset_root_path: str,
-    seat_pos_root: tuple[float, float, float],
-    seat_quat_root: tuple[float, float, float, float],
-    corner_paths: tuple[str, str, str, str],
-    *,
-    tooth_pos_tip: tuple[float, float, float],
-    plug_frame_pos_tip: tuple[float, float, float],
-    plug_frame_quat_tip: tuple[float, float, float, float],
-) -> tuple[float, float, float]:
-    """Shift the calibrated plug frame so the tooth keypoint rides the port top line."""
-    corner_positions = [_prim_position_in_asset_root(asset_root_path, corner_path) for corner_path in corner_paths]
-
-    dtype = torch.float64
-    corners = torch.tensor(corner_positions, dtype=dtype)
-    seat_pos = torch.tensor(seat_pos_root, dtype=dtype)
-    seat_quat = torch.tensor(seat_quat_root, dtype=dtype).unsqueeze(0)
-    port_y = math_utils.quat_apply(seat_quat, torch.tensor([[0.0, 1.0, 0.0]], dtype=dtype))[0]
-    port_z = math_utils.quat_apply(seat_quat, torch.tensor([[0.0, 0.0, 1.0]], dtype=dtype))[0]
-    port_y = torch.nn.functional.normalize(port_y, dim=0)
-    port_z = torch.nn.functional.normalize(port_z, dim=0)
-
-    # User-confirmed top direction is port-local -Z.  The two corners with the
-    # smallest projection on +Z form the top edge of the port opening.
-    z_coord = torch.sum(corners * port_z, dim=1)
-    top_corner_ids = torch.topk(z_coord, k=2, largest=False).indices
-    top_center = corners[top_corner_ids].mean(dim=0)
-    seat_depth = torch.dot(seat_pos - top_center, port_y)
-    tooth_target_at_seat = top_center + seat_depth * port_y
-
-    desired_plug_quat_root = _desired_tip_quat_from_port(seat_quat)[0].unsqueeze(0)
-    plug_quat_tip = torch.tensor(plug_frame_quat_tip, dtype=dtype).unsqueeze(0)
-    desired_tip_quat_root = math_utils.quat_mul(desired_plug_quat_root, math_utils.quat_inv(plug_quat_tip))
-    tooth_from_plug_tip = torch.tensor(tooth_pos_tip, dtype=dtype) - torch.tensor(plug_frame_pos_tip, dtype=dtype)
-    tooth_from_plug_root = math_utils.quat_apply(desired_tip_quat_root, tooth_from_plug_tip.unsqueeze(0))[0]
-    plug_frame_seat = tooth_target_at_seat - tooth_from_plug_root
-    return tuple(float(value) for value in plug_frame_seat.tolist())
-
-
-def _offset_pos_in_local_frame(
-    pos_root: tuple[float, float, float],
-    quat_root: tuple[float, float, float, float],
-    offset_local: tuple[float, float, float],
-) -> tuple[float, float, float]:
-    dtype = torch.float64
-    pos = torch.tensor(pos_root, dtype=dtype)
-    quat = torch.tensor(quat_root, dtype=dtype).unsqueeze(0)
-    offset = torch.tensor(offset_local, dtype=dtype).unsqueeze(0)
-    shifted = pos + math_utils.quat_apply(quat, offset)[0]
-    return tuple(float(value) for value in shifted.tolist())
-
-
-def _quat_from_rpy_offset_deg(
-    rpy_deg: tuple[float, float, float],
-    *,
-    dtype: torch.dtype,
-    device: str,
-    num_envs: int,
-) -> torch.Tensor:
-    roll = torch.full((num_envs,), math.radians(float(rpy_deg[0])), dtype=dtype, device=device)
-    pitch = torch.full((num_envs,), math.radians(float(rpy_deg[1])), dtype=dtype, device=device)
-    yaw = torch.full((num_envs,), math.radians(float(rpy_deg[2])), dtype=dtype, device=device)
-    return math_utils.quat_from_euler_xyz(roll, pitch, yaw)
-
-
 def _prim_position_in_asset_root(asset_root_path: str, prim_path: str) -> tuple[float, float, float]:
     import omni.usd
     from pxr import UsdGeom
@@ -626,6 +548,103 @@ def _prim_position_in_asset_root(asset_root_path: str, prim_path: str) -> tuple[
     prim_matrix = cache.GetLocalToWorldTransform(prim)
     position_root = root_matrix.GetInverse().Transform(prim_matrix.ExtractTranslation())
     return (float(position_root[0]), float(position_root[1]), float(position_root[2]))
+
+
+def _tip_child_pose_in_tip_batch(
+    robot,
+    num_envs: int,
+    tip_body: str,
+    child_name: str,
+    *,
+    dtype: torch.dtype,
+    device: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    poses = [
+        _tip_child_pose_in_tip(
+            robot,
+            env_index,
+            tip_body,
+            child_name,
+            dtype=dtype,
+            device=device,
+        )
+        for env_index in range(num_envs)
+    ]
+    pos = torch.stack([pose[0] for pose in poses], dim=0)
+    quat = torch.stack([pose[1] for pose in poses], dim=0)
+    return pos, quat
+
+
+def _tip_child_pose_in_tip(
+    robot,
+    env_index: int,
+    tip_body: str,
+    child_name: str,
+    *,
+    dtype: torch.dtype,
+    device: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    import omni.usd
+
+    stage = omni.usd.get_context().get_stage()
+    roots = _asset_search_roots(robot, env_index)
+    tip_prim = _find_prim_by_basename(stage, roots, tip_body)
+    child_prim = _find_prim_by_basename(stage, roots, child_name)
+    if tip_prim is None:
+        raise KeyError(f"Could not find tip prim '{tip_body}' under {roots}.")
+    if child_prim is None:
+        raise KeyError(f"Could not find child prim '{child_name}' under {roots}.")
+    return _pose_in_root(tip_prim, child_prim, dtype=dtype, device=device)
+
+
+def _pose_in_root(root_prim, child_prim, *, dtype: torch.dtype, device: str) -> tuple[torch.Tensor, torch.Tensor]:
+    from pxr import Gf, UsdGeom
+
+    cache = UsdGeom.XformCache()
+    root_matrix = cache.GetLocalToWorldTransform(root_prim)
+    child_matrix = cache.GetLocalToWorldTransform(child_prim)
+    root_inv = root_matrix.GetInverse()
+    child_w = child_matrix.ExtractTranslation()
+    child_root = root_inv.Transform(child_w)
+
+    axes = []
+    for axis in (Gf.Vec3d(1.0, 0.0, 0.0), Gf.Vec3d(0.0, 1.0, 0.0), Gf.Vec3d(0.0, 0.0, 1.0)):
+        axis_root = root_inv.TransformDir(child_matrix.TransformDir(axis))
+        axes.append((float(axis_root[0]), float(axis_root[1]), float(axis_root[2])))
+    rot = torch.tensor(
+        [
+            [axes[0][0], axes[1][0], axes[2][0]],
+            [axes[0][1], axes[1][1], axes[2][1]],
+            [axes[0][2], axes[1][2], axes[2][2]],
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    quat = math_utils.quat_from_matrix(rot.unsqueeze(0))[0]
+    pos = torch.tensor((float(child_root[0]), float(child_root[1]), float(child_root[2])), dtype=dtype, device=device)
+    return pos, quat
+
+
+def _front_frame_quat_from_points(
+    left_pos: torch.Tensor,
+    right_pos: torch.Tensor,
+) -> torch.Tensor:
+    """Build the controlled plug-front frame in ``sfp_tip_link`` coordinates.
+
+    The left/right keypoints define front-frame +X.  The plug insertion axis is
+    the tip-link local -Z direction, so front-frame +Y is built from local -Z
+    after removing the component parallel to +X.
+    """
+    front_x = _normalize_rows(right_pos - left_pos)
+    front_y = torch.tensor((0.0, 0.0, -1.0), dtype=front_x.dtype, device=front_x.device).unsqueeze(0)
+    front_y = front_y.expand_as(front_x)
+    degenerate_y = torch.linalg.norm(torch.linalg.cross(front_x, front_y, dim=1), dim=1, keepdim=True) < 1.0e-4
+    fallback_y = torch.tensor((0.0, 1.0, 0.0), dtype=front_x.dtype, device=front_x.device).unsqueeze(0)
+    front_y = torch.where(degenerate_y, fallback_y.expand_as(front_y), front_y)
+    front_y = _normalize_rows(front_y - torch.sum(front_y * front_x, dim=1, keepdim=True) * front_x)
+    front_z = _normalize_rows(torch.linalg.cross(front_x, front_y, dim=1))
+    front_y = _normalize_rows(torch.linalg.cross(front_z, front_x, dim=1))
+    return _quat_from_frame_axes(front_x, front_y, front_z)
 
 
 def _relative_ik_processed_action(
@@ -670,26 +689,8 @@ def _relative_ik_processed_action(
     return processed_action
 
 
-def _desired_tip_quat_from_port(port_quat_w: torch.Tensor) -> torch.Tensor:
-    """Return the raw SFP tip orientation for insertion into the NIC port.
-
-    Confirmed frame mapping:
-    - tip local +Y aligns with port local -Z
-    - tip local +Z aligns with port local -Y
-
-    These two constraints define the right-handed tip frame.  They imply tip
-    local +X aligns with port local -X.
-    """
-    port_y = _local_axis_w(port_quat_w, (0.0, 1.0, 0.0))
-    port_z = _local_axis_w(port_quat_w, (0.0, 0.0, 1.0))
-
-    target_y = -port_z
-    target_z = -port_y
-    target_x = torch.linalg.cross(target_y, target_z, dim=1)
-    target_x = torch.nn.functional.normalize(target_x, dim=1)
-    target_y = torch.linalg.cross(target_z, target_x, dim=1)
-    target_y = torch.nn.functional.normalize(target_y, dim=1)
-    return _quat_from_frame_axes(target_x, target_y, target_z)
+def _root_point_to_world(root_pos_w: torch.Tensor, root_quat_w: torch.Tensor, point_root: torch.Tensor) -> torch.Tensor:
+    return root_pos_w + math_utils.quat_apply(root_quat_w, point_root)
 
 
 def _local_axis_w(quat_w: torch.Tensor, axis_local: tuple[float, float, float]) -> torch.Tensor:
@@ -697,9 +698,24 @@ def _local_axis_w(quat_w: torch.Tensor, axis_local: tuple[float, float, float]) 
     return math_utils.quat_apply(quat_w, axis.expand(quat_w.shape[0], -1))
 
 
+def _axis_angle(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    a = _normalize_rows(a)
+    b = _normalize_rows(b)
+    dot = torch.clamp(torch.sum(a * b, dim=1), min=-1.0, max=1.0)
+    return torch.acos(dot)
+
+
 def _quat_from_frame_axes(x_axis: torch.Tensor, y_axis: torch.Tensor, z_axis: torch.Tensor) -> torch.Tensor:
     frame = torch.stack((x_axis, y_axis, z_axis), dim=-1)
     return math_utils.quat_from_matrix(frame)
+
+
+def _normalize(vector: torch.Tensor) -> torch.Tensor:
+    return vector / torch.clamp(torch.linalg.norm(vector), min=1.0e-9)
+
+
+def _normalize_rows(vector: torch.Tensor) -> torch.Tensor:
+    return vector / torch.clamp(torch.linalg.norm(vector, dim=1, keepdim=True), min=1.0e-9)
 
 
 def _first_body_id(robot, body_name: str) -> int:
@@ -708,113 +724,6 @@ def _first_body_id(robot, body_name: str) -> int:
         available = ", ".join(getattr(robot, "body_names", []))
         raise KeyError(f"Robot body '{body_name}' not found. Available robot bodies: {available}")
     return int(body_ids[0])
-
-
-def _insertion_ref_pos_in_tip(
-    robot,
-    num_envs: int,
-    tip_body: str,
-    child_names: tuple[str, str],
-    *,
-    dtype: torch.dtype,
-    device: str,
-) -> torch.Tensor:
-    """Return the module position reference in the tip frame for every env.
-
-    The tip-link origin is not a reliable insertion reference for this asset.
-    The side keypoints are the measured geometry, so we drive their midpoint
-    along the port centerline.
-    """
-    refs = []
-    for env_index in range(num_envs):
-        try:
-            refs.append(_tip_child_midpoint_in_tip(robot, env_index, tip_body, child_names, dtype=dtype, device=device))
-        except Exception as exc:
-            print(
-                f"[WARN] Could not resolve insertion reference from {child_names}; "
-                f"falling back to {tip_body} origin: {exc}"
-            )
-            refs.append(torch.zeros(3, dtype=dtype, device=device))
-    return torch.stack(refs, dim=0)
-
-
-def _tip_child_midpoint_in_tip(
-    robot,
-    env_index: int,
-    tip_body: str,
-    child_names: tuple[str, str],
-    *,
-    dtype: torch.dtype,
-    device: str,
-) -> torch.Tensor:
-    import omni.usd
-    from pxr import UsdGeom
-
-    stage = omni.usd.get_context().get_stage()
-    roots = _asset_search_roots(robot, env_index)
-    tip_prim = _find_prim_by_basename(stage, roots, tip_body)
-    if tip_prim is None:
-        raise KeyError(f"Could not find tip prim '{tip_body}' under {roots}.")
-
-    cache = UsdGeom.XformCache()
-    tip_matrix = cache.GetLocalToWorldTransform(tip_prim)
-    tip_inv = tip_matrix.GetInverse()
-    child_positions = []
-    for child_name in child_names:
-        child_positions.append(
-            tuple(
-                float(value)
-                for value in _tip_child_pos_in_tip(
-                    robot,
-                    env_index,
-                    tip_body,
-                    child_name,
-                    dtype=dtype,
-                    device=device,
-                    stage=stage,
-                    roots=roots,
-                    tip_inv=tip_inv,
-                    cache=cache,
-                ).tolist()
-            )
-        )
-    return torch.tensor(child_positions, dtype=dtype, device=device).mean(dim=0)
-
-
-def _tip_child_pos_in_tip(
-    robot,
-    env_index: int,
-    tip_body: str,
-    child_name: str,
-    *,
-    dtype: torch.dtype,
-    device: str,
-    stage=None,
-    roots: list[str] | None = None,
-    tip_inv=None,
-    cache=None,
-) -> torch.Tensor:
-    import omni.usd
-    from pxr import UsdGeom
-
-    if stage is None:
-        stage = omni.usd.get_context().get_stage()
-    if roots is None:
-        roots = _asset_search_roots(robot, env_index)
-    if cache is None:
-        cache = UsdGeom.XformCache()
-    if tip_inv is None:
-        tip_prim = _find_prim_by_basename(stage, roots, tip_body)
-        if tip_prim is None:
-            raise KeyError(f"Could not find tip prim '{tip_body}' under {roots}.")
-        tip_inv = cache.GetLocalToWorldTransform(tip_prim).GetInverse()
-
-    child_prim = _find_prim_by_basename(stage, roots, child_name)
-    if child_prim is None:
-        raise KeyError(f"Could not find child prim '{child_name}' under {roots}.")
-    child_w = cache.GetLocalToWorldTransform(child_prim).ExtractTranslation()
-    child_tip = tip_inv.Transform(child_w)
-    return torch.tensor((float(child_tip[0]), float(child_tip[1]), float(child_tip[2])), dtype=dtype, device=device)
 
 
 def _asset_search_roots(asset, env_index: int) -> list[str]:
