@@ -1,4 +1,4 @@
-"""Run a front-keypoint NIC-card SFP insertion demo oracle."""
+"""Run a direct-pose NIC-card SFP insertion demo oracle."""
 
 """Launch Isaac Sim Simulator first."""
 
@@ -11,24 +11,25 @@ parser.add_argument("--task", type=str, default="AIC-Port-Insertion-v0")
 parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--step_hz", type=int, default=30)
 parser.add_argument("--max_episode_steps", type=int, default=1200)
+parser.add_argument("--port_index", type=int, choices=(0, 1), default=0, help="NIC SFP port index to insert into.")
 parser.add_argument(
     "--approach_offset",
     type=float,
     nargs=3,
-    default=(0.0, -0.05, 0.0),
+    default=(0.0, -0.09, 0.0),
     metavar=("X", "Y", "Z"),
     help=(
-        "Approach offset in the sfp_port_0_link local frame, meters. "
-        "Default is 10 cm along -Y because insertion is port-local +Y."
+        "Approach offset in the selected sfp_port_N_link local frame, meters. "
+        "Default is 9 cm along -Y because insertion is port-local +Y."
     ),
 )
 parser.add_argument(
-    "--front_target_xz_offset",
+    "--target_xz_offset",
     type=float,
     nargs=2,
-    default=(0.0, 0.004),
+    default=(0.0, 0.0),
     metavar=("X", "Z"),
-    help="Extra front target offset in the port X/Z plane, meters. Y remains the insertion direction.",
+    help="Extra target offset in the selected port X/Z plane, meters. Y remains the insertion direction.",
 )
 parser.add_argument("--approach_threshold", type=float, default=0.015)
 parser.add_argument(
@@ -136,14 +137,12 @@ import aic_task.tasks  # noqa: F401
 
 _ORACLE = None
 
-PORT_POINT_PATHS = {
-    "sfp_port_0_link": "/sfp_port_0_link",
-    "sfp_port_0_link_entrance": "/sfp_port_0_link/sfp_port_0_link_entrance",
-    "sfp_port_0_front_left": "/sfp_port_0_link/sfp_port_0_link_entrance/sfp_port_0_front_left",
-    "sfp_port_0_back_left": "/sfp_port_0_link/sfp_port_0_link_entrance/sfp_port_0_back_left",
-    "sfp_port_0_back_right": "/sfp_port_0_link/sfp_port_0_link_entrance/sfp_port_0_back_right",
-    "sfp_port_0_front_right": "/sfp_port_0_link/sfp_port_0_link_entrance/sfp_port_0_front_right",
-}
+def _port_point_paths(port_index: int) -> dict[str, str]:
+    port = f"sfp_port_{port_index}"
+    return {
+        f"{port}_link": f"/{port}_link",
+        f"{port}_link_entrance": f"/{port}_link/{port}_link_entrance",
+    }
 
 TIP_POINT_NAMES = {
     "sfp_tip_link": "sfp_tip_link",
@@ -222,8 +221,9 @@ def main() -> None:
         _settle_start_pose(env, rate_limiter, args_cli.start_settle_steps)
     targets = oracle.make_simple_nic_insert_targets(
         env,
+        port_index=args_cli.port_index,
         approach_offset_local=tuple(args_cli.approach_offset),
-        front_target_xz_offset=tuple(args_cli.front_target_xz_offset),
+        target_xz_offset=tuple(args_cli.target_xz_offset),
     )
     world_targets = oracle.compute_simple_nic_insert_world_targets(env, targets)
     state = oracle.make_simple_nic_insert_state(env)
@@ -232,22 +232,17 @@ def main() -> None:
     print(f"[INFO] Action scale: {action_scale[0].detach().cpu().tolist()}")
     if not args_cli.disable_start_joint_reset:
         print(f"[INFO] start_joint_pos: {tuple(args_cli.start_joint_pos)}")
-    print("[INFO] front-frame mapping: plug-front +X -> -port-front X, sfp_tip_link -Z -> port +Y insertion")
+    print(f"[INFO] selected port: sfp_port_{args_cli.port_index}_link")
+    print("[INFO] target mapping: sfp_tip_link pose -> selected sfp_port_N_link pose")
     print(
         "[INFO] insert orientation gate: "
         f"{args_cli.insert_orientation_threshold_deg:.2f} deg, "
         f"lookahead={args_cli.insert_lookahead:.4f} m"
     )
-    print(f"[INFO] approach_offset in computed port-front frame: {tuple(args_cli.approach_offset)}")
-    print(f"[INFO] front_target_xz_offset in port X/Z plane: {tuple(args_cli.front_target_xz_offset)}")
-    print(
-        "[INFO] plug-front frame in sfp_tip_link: "
-        f"center={state.front_center_pos_tip[0].detach().cpu().tolist()}, "
-        f"width={float(state.tip_width[0, 0]):.6f} m"
-    )
-    print(f"[INFO] live entry_front_center_w[0]: {world_targets.entry_front_center_w[0].detach().cpu().tolist()}")
-    print(f"[INFO] live approach_front_center_w[0]: {world_targets.approach_front_center_w[0].detach().cpu().tolist()}")
-    print(f"[INFO] live final_front_center_w[0]: {world_targets.final_front_center_w[0].detach().cpu().tolist()}")
+    print(f"[INFO] approach_offset in selected port frame: {tuple(args_cli.approach_offset)}")
+    print(f"[INFO] target_xz_offset in selected port X/Z plane: {tuple(args_cli.target_xz_offset)}")
+    print(f"[INFO] live approach_tip_target_w[0]: {world_targets.approach_tip_pos_w[0].detach().cpu().tolist()}")
+    print(f"[INFO] live final_tip_target_w[0]: {world_targets.final_tip_pos_w[0].detach().cpu().tolist()}")
 
     point_logger = None
     if not args_cli.disable_point_log:
@@ -257,8 +252,10 @@ def main() -> None:
             output_path=args_cli.point_log_path,
             offsets={
                 "approach_offset": tuple(args_cli.approach_offset),
-                "front_target_xz_offset": tuple(args_cli.front_target_xz_offset),
+                "target_xz_offset": tuple(args_cli.target_xz_offset),
+                "port_index": args_cli.port_index,
             },
+            port_index=args_cli.port_index,
         )
         print(f"[INFO] Writing point-position log to: {point_logger.path}")
 
@@ -291,7 +288,7 @@ def main() -> None:
                 if args_cli.log_every > 0 and step % args_cli.log_every == 0:
                     path_xy_msg = ""
                     if args_cli.log_path_xy_error:
-                        xy_delta = output.front_center_w[0, :2] - output.target_front_center_w[0, :2]
+                        xy_delta = output.tip_pos_w[0, :2] - output.target_tip_pos_w[0, :2]
                         xy_abs = torch.abs(xy_delta)
                         path_xy_msg = (
                             f" path_line_err={float(output.path_lateral_error[0]):.4f} m"
@@ -302,6 +299,7 @@ def main() -> None:
                             f" ori_err={math.degrees(float(output.orientation_error[0])):.2f} deg"
                             f" x_axis_err={math.degrees(float(output.x_axis_error[0])):.2f} deg"
                             f" y_axis_err={math.degrees(float(output.y_axis_error[0])):.2f} deg"
+                            f" z_axis_err={math.degrees(float(output.z_axis_error[0])):.2f} deg"
                             f" tcp_pos_err={float(output.tcp_position_error[0]):.4f} m"
                             f" tcp_ori_err={math.degrees(float(output.tcp_orientation_error[0])):.2f} deg"
                             f" cmd_pos_b={_fmt_vec(output.processed_action[0, :3])}"
@@ -309,9 +307,8 @@ def main() -> None:
                         )
                     print(
                         f"[INFO] step={step:04d} phase={phase} "
-                        f"front_err={float(output.front_center_error[0]):.4f} m "
-                        f"left_err={float(output.front_left_error[0]):.4f} m "
-                        f"right_err={float(output.front_right_error[0]):.4f} m "
+                        f"tip_err={float(output.tip_position_error[0]):.4f} m "
+                        f"ori_err={math.degrees(float(output.orientation_error[0])):.2f} deg "
                         f"insert={float(output.insert_fraction[0]) * 100.0:5.1f}% "
                         f"|a|={float(torch.linalg.norm(output.raw_action[0])):.3f}"
                         f"{path_xy_msg}"
@@ -352,9 +349,11 @@ class _PointPositionLogger:
         env_index: int,
         output_path: str | None,
         offsets: dict,
+        port_index: int,
     ):
         self.env = env
         self.env_index = min(max(0, env_index), env.num_envs - 1)
+        self.port_index = port_index
         self.robot = env.scene["robot"]
         self.nic_card = env.scene["nic_card"]
         self.tcp_id = _first_body_id(self.robot, "gripper_tcp")
@@ -378,15 +377,10 @@ class _PointPositionLogger:
                 "env_index": self.env_index,
                 "coordinate_frame": "world",
                 "offsets": offsets,
-                "port_points": list(PORT_POINT_PATHS.keys()),
+                "port_points": list(_port_point_paths(self.port_index).keys()),
                 "tip_points": list(TIP_POINT_NAMES.keys()),
                 "tcp_point": "gripper_tcp",
-                "derived_points": [
-                    "front_center",
-                    "target_front_center",
-                    "target_front_left",
-                    "target_front_right",
-                ],
+                "derived_points": ["target_tip"],
             }
         )
 
@@ -400,21 +394,17 @@ class _PointPositionLogger:
                 "tip": self._tip_world_positions(),
                 "tcp_gripper": _tensor_list(self.robot.data.body_pos_w[self.env_index, self.tcp_id]),
                 "derived": {
-                    "front_center": _tensor_list(output.front_center_w[self.env_index]),
-                    "target_front_center": _tensor_list(output.target_front_center_w[self.env_index]),
-                    "target_front_left": _tensor_list(output.target_front_left_w[self.env_index]),
-                    "target_front_right": _tensor_list(output.target_front_right_w[self.env_index]),
+                    "target_tip": _tensor_list(output.target_tip_pos_w[self.env_index]),
                 },
                 "diagnostics": {
-                    "front_center_error": float(output.front_center_error[self.env_index]),
-                    "front_left_error": float(output.front_left_error[self.env_index]),
-                    "front_right_error": float(output.front_right_error[self.env_index]),
+                    "tip_position_error": float(output.tip_position_error[self.env_index]),
                     "path_lateral_error": float(output.path_lateral_error[self.env_index]),
                     "path_distance": float(output.path_distance[self.env_index]),
                     "target_path_distance": float(output.target_path_distance[self.env_index]),
                     "orientation_error_deg": math.degrees(float(output.orientation_error[self.env_index])),
                     "x_axis_error_deg": math.degrees(float(output.x_axis_error[self.env_index])),
                     "y_axis_error_deg": math.degrees(float(output.y_axis_error[self.env_index])),
+                    "z_axis_error_deg": math.degrees(float(output.z_axis_error[self.env_index])),
                     "tcp_position_error": float(output.tcp_position_error[self.env_index]),
                     "tcp_orientation_error_deg": math.degrees(float(output.tcp_orientation_error[self.env_index])),
                 },
@@ -445,12 +435,10 @@ class _PointPositionLogger:
         return positions
 
     def _resolve_port_local_positions(self) -> dict[str, torch.Tensor]:
-        from aic_task.geometry.runtime import resolve_asset_root_prim_path
-
-        root_path = resolve_asset_root_prim_path(self.nic_card, self.env_index)
+        root_path = _resolve_asset_root_prim_path(self.nic_card, self.env_index)
         return {
             name: _prim_position_in_root(root_path, prim_path, dtype=self.nic_card.data.root_pos_w.dtype, device=self.env.device)
-            for name, prim_path in PORT_POINT_PATHS.items()
+            for name, prim_path in _port_point_paths(self.port_index).items()
         }
 
     def _resolve_tip_local_positions(self) -> dict[str, torch.Tensor]:
@@ -493,8 +481,6 @@ def _prim_position_in_root(root_path: str, prim_path: str, *, dtype: torch.dtype
     import omni.usd
     from pxr import UsdGeom
 
-    from aic_task.geometry.runtime import _candidate_prim_paths, _resolve_prim
-
     stage = omni.usd.get_context().get_stage()
     root_prim = stage.GetPrimAtPath(root_path)
     _, prim = _resolve_prim(stage, root_path, prim_path)
@@ -525,8 +511,6 @@ def _asset_search_roots(asset, env_index: int) -> list[str]:
 
 
 def _find_prim_by_basename(stage, roots: list[str], basename: str):
-    from aic_task.geometry.runtime import _candidate_prim_paths
-
     for root in roots:
         for candidate in _candidate_prim_paths(root, basename):
             prim = stage.GetPrimAtPath(candidate)
@@ -543,6 +527,66 @@ def _find_prim_by_basename(stage, roots: list[str], basename: str):
 
 def _tensor_list(values: torch.Tensor) -> list[float]:
     return [float(value) for value in values.detach().cpu().tolist()]
+
+
+def _resolve_asset_root_prim_path(asset, env_index: int, *, usd_root_child: str = "nic_card_link") -> str:
+    """Return the USD instance root path without importing old geometry helpers."""
+    prim_paths = list(getattr(asset.root_physx_view, "prim_paths", []))
+    if not prim_paths:
+        cfg_path = getattr(getattr(asset, "cfg", None), "prim_path", "")
+        raise RuntimeError(f"Cannot resolve prim paths for asset with cfg path '{cfg_path}'.")
+
+    index = min(env_index, len(prim_paths) - 1)
+    prim_path = str(prim_paths[index])
+    suffix = f"/{usd_root_child}"
+    if prim_path.endswith(suffix):
+        return prim_path[: -len(suffix)]
+    return prim_path
+
+
+def _join_prim_path(asset_root_path: str, relative_path: str) -> str:
+    return f"{asset_root_path.rstrip('/')}/{relative_path.lstrip('/')}"
+
+
+def _resolve_prim(stage, asset_root_path: str, relative_path: str):
+    """Resolve a prim by exact candidate paths, then by descendant basename."""
+    for prim_path in _candidate_prim_paths(asset_root_path, relative_path):
+        prim = stage.GetPrimAtPath(prim_path)
+        if prim.IsValid():
+            return prim_path, prim
+
+    basename = relative_path.rstrip("/").rsplit("/", 1)[-1]
+    root_prefixes = _asset_root_prefixes(asset_root_path)
+    for prim in stage.Traverse():
+        prim_path = prim.GetPath().pathString
+        if not any(prim_path == prefix or prim_path.startswith(prefix + "/") for prefix in root_prefixes):
+            continue
+        if prim_path.rsplit("/", 1)[-1] == basename:
+            return prim_path, prim
+    return _candidate_prim_paths(asset_root_path, relative_path)[0], stage.GetPrimAtPath("/__missing__")
+
+
+def _candidate_prim_paths(asset_root_path: str, relative_path: str) -> list[str]:
+    """Return path candidates for assets spawned with or without defaultPrim nesting."""
+    relative = relative_path.lstrip("/")
+    candidates = [_join_prim_path(asset_root_path, relative)]
+    if relative.startswith("nic_card_link/"):
+        candidates.append(_join_prim_path(asset_root_path, relative.removeprefix("nic_card_link/")))
+    if asset_root_path.endswith("/nic_card_link"):
+        parent_root = asset_root_path.removesuffix("/nic_card_link")
+        candidates.append(_join_prim_path(parent_root, relative))
+        if relative.startswith("nic_card_link/"):
+            candidates.append(_join_prim_path(parent_root, relative.removeprefix("nic_card_link/")))
+    return list(dict.fromkeys(candidates))
+
+
+def _asset_root_prefixes(asset_root_path: str) -> tuple[str, ...]:
+    prefixes = [asset_root_path.rstrip("/")]
+    if prefixes[0].endswith("/nic_card_link"):
+        prefixes.append(prefixes[0].removesuffix("/nic_card_link"))
+    else:
+        prefixes.append(prefixes[0] + "/nic_card_link")
+    return tuple(dict.fromkeys(prefixes))
 
 
 def _disable_rewards(env_cfg) -> None:
