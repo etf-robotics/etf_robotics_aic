@@ -11,26 +11,6 @@ parser.add_argument("--task", type=str, default="AIC-Port-Insertion-v0")
 parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--step_hz", type=int, default=30)
 parser.add_argument("--max_episode_steps", type=int, default=1200)
-parser.add_argument("--port_index", type=int, choices=(0, 1), default=0, help="NIC SFP port index to insert into.")
-parser.add_argument(
-    "--approach_offset",
-    type=float,
-    nargs=3,
-    default=(0.0, -0.09, 0.0),
-    metavar=("X", "Y", "Z"),
-    help=(
-        "Approach offset in the selected sfp_port_N_link local frame, meters. "
-        "Default is 9 cm along -Y because insertion is port-local +Y."
-    ),
-)
-parser.add_argument(
-    "--target_xz_offset",
-    type=float,
-    nargs=2,
-    default=(0.0, 0.0),
-    metavar=("X", "Z"),
-    help="Extra target offset in the selected port X/Z plane, meters. Y remains the insertion direction.",
-)
 parser.add_argument("--approach_threshold", type=float, default=0.015)
 parser.add_argument(
     "--insert_lateral_threshold",
@@ -57,7 +37,6 @@ parser.add_argument("--rot_gain", type=float, default=0.2)
 parser.add_argument("--max_pos_delta", type=float, default=0.020)
 parser.add_argument("--insert_max_pos_delta", type=float, default=0.02)
 parser.add_argument("--max_rot_delta", type=float, default=2.5)
-parser.add_argument("--hold_steps", type=int, default=30)
 parser.add_argument("--log_every", type=int, default=5, help="0 disables periodic logging.")
 parser.add_argument(
     "--log_path_xy_error",
@@ -187,7 +166,6 @@ def main() -> None:
     )
     env_cfg.env_name = args_cli.task.split(":")[-1]
     _disable_rewards(env_cfg)
-    _disable_terminations(env_cfg)
 
     env = gym.make(args_cli.task, cfg=env_cfg).unwrapped
     if args_cli.stream:
@@ -204,28 +182,23 @@ def main() -> None:
     if not args_cli.disable_start_joint_reset:
         _apply_start_joint_pose(env, tuple(args_cli.start_joint_pos))
         _settle_start_pose(env, rate_limiter, args_cli.start_settle_steps)
-    targets = oracle.make_simple_nic_insert_targets(
-        env,
-        port_index=args_cli.port_index,
-        approach_offset_local=tuple(args_cli.approach_offset),
-        target_xz_offset=tuple(args_cli.target_xz_offset),
-    )
-    world_targets = oracle.compute_simple_nic_insert_world_targets(env, targets)
+    goal = oracle.get_insertion_goal(env)
+    world_targets = oracle.compute_simple_nic_insert_world_targets(env)
     state = oracle.make_simple_nic_insert_state(env)
 
     print(f"[INFO] Running simple NIC insert oracle on {args_cli.task}")
     print(f"[INFO] Action scale: {action_scale[0].detach().cpu().tolist()}")
     if not args_cli.disable_start_joint_reset:
         print(f"[INFO] start_joint_pos: {tuple(args_cli.start_joint_pos)}")
-    print(f"[INFO] selected port: sfp_port_{args_cli.port_index}_link")
-    print("[INFO] target mapping: sfp_tip_link pose -> selected sfp_port_N_link pose")
+    print(f"[INFO] selected port: {goal.cfg.port_name}_link")
+    print("[INFO] target mapping: command sfp_tip_link pose -> selected sfp_port_N_link pose")
     print(
         "[INFO] insert orientation gate: "
         f"{args_cli.insert_orientation_threshold_deg:.2f} deg, "
         f"lookahead={args_cli.insert_lookahead:.4f} m"
     )
-    print(f"[INFO] approach_offset in selected port frame: {tuple(args_cli.approach_offset)}")
-    print(f"[INFO] target_xz_offset in selected port X/Z plane: {tuple(args_cli.target_xz_offset)}")
+    print(f"[INFO] approach_offset in selected port frame: {tuple(goal.cfg.approach_offset_local)}")
+    print(f"[INFO] target_xz_offset in selected port X/Z plane: {tuple(goal.cfg.target_xz_offset)}")
     print(f"[INFO] live approach_tip_target_w[0]: {world_targets.approach_tip_pos_w[0].detach().cpu().tolist()}")
     print(f"[INFO] live final_tip_target_w[0]: {world_targets.final_tip_pos_w[0].detach().cpu().tolist()}")
 
@@ -236,11 +209,11 @@ def main() -> None:
             env_index=args_cli.point_log_env_index,
             output_path=args_cli.point_log_path,
             offsets={
-                "approach_offset": tuple(args_cli.approach_offset),
-                "target_xz_offset": tuple(args_cli.target_xz_offset),
-                "port_index": args_cli.port_index,
+                "approach_offset": tuple(goal.cfg.approach_offset_local),
+                "target_xz_offset": tuple(goal.cfg.target_xz_offset),
+                "port_index": goal.cfg.port_index,
             },
-            port_index=args_cli.port_index,
+            port_index=goal.cfg.port_index,
         )
         print(f"[INFO] Writing point-position log to: {point_logger.path}")
 
@@ -250,7 +223,6 @@ def main() -> None:
                 output = oracle.compute_simple_nic_insert_oracle(
                     env,
                     action_scale,
-                    targets,
                     state,
                     pos_gain=args_cli.pos_gain,
                     rot_gain=args_cli.rot_gain,
@@ -268,7 +240,18 @@ def main() -> None:
                 if point_logger is not None:
                     logged_phase = oracle.SimpleNicInsertPhase(int(output.phase[point_logger.env_index])).name
                     point_logger.write_step(step, logged_phase, output)
-                env.step(output.raw_action)
+                _, _, terminated, time_outs, _ = env.step(output.raw_action)
+                reset_mask = terminated | time_outs
+                if bool(torch.any(reset_mask)):
+                    reset_env_ids = reset_mask.nonzero(as_tuple=False).squeeze(-1)
+                    oracle.reset_simple_nic_insert_state(env, state, reset_env_ids)
+                    reset_terms = _reset_term_summary(env, reset_env_ids)
+                    print(
+                        f"[INFO] reset envs={reset_env_ids.detach().cpu().tolist()} "
+                        f"terminated={int(torch.count_nonzero(terminated).item())} "
+                        f"time_outs={int(torch.count_nonzero(time_outs).item())} "
+                        f"terms={reset_terms}"
+                    )
 
                 if args_cli.log_every > 0 and step % args_cli.log_every == 0:
                     phase0 = oracle.SimpleNicInsertPhase(int(output.phase[0])).name
@@ -301,14 +284,6 @@ def main() -> None:
                         f"{path_xy_msg}"
                     )
 
-                hold_done = (
-                    (state.phase == int(oracle.SimpleNicInsertPhase.HOLD))
-                    & (state.hold_steps >= args_cli.hold_steps)
-                )
-                if bool(torch.all(hold_done)):
-                    print(f"[INFO] Hold complete for all {env.num_envs} envs after {step + 1} steps.")
-                    break
-
                 if env.sim.is_stopped():
                     break
                 rate_limiter.sleep(env)
@@ -332,6 +307,16 @@ def _phase_summary(oracle, phases: torch.Tensor) -> str:
         count = int(torch.count_nonzero(phases == int(phase)).item())
         counts.append(f"{phase.name}={count}")
     return "[" + ", ".join(counts) + "]"
+
+
+def _reset_term_summary(env: gym.Env, reset_env_ids: torch.Tensor) -> str:
+    terms = []
+    for name in getattr(env.termination_manager, "active_terms", []):
+        values = env.termination_manager.get_term(name)[reset_env_ids]
+        count = int(torch.count_nonzero(values).item())
+        if count > 0:
+            terms.append(f"{name}={count}")
+    return "[" + ", ".join(terms) + "]"
 
 
 class _PointPositionLogger:
@@ -589,13 +574,6 @@ def _disable_rewards(env_cfg) -> None:
         if name.startswith("_") or value is None:
             continue
         setattr(env_cfg.rewards, name, None)
-
-
-def _disable_terminations(env_cfg) -> None:
-    for name, value in vars(env_cfg.terminations).items():
-        if name.startswith("_") or value is None:
-            continue
-        setattr(env_cfg.terminations, name, None)
 
 
 def _apply_start_joint_pose(env: gym.Env, joint_pos: tuple[float, float, float, float, float, float]) -> None:

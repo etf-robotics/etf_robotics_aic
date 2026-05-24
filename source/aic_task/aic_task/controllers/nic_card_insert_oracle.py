@@ -1,10 +1,9 @@
 """Simple pose oracle for inserting an SFP module into a NIC port.
 
 This oracle intentionally uses only one controlled plug frame:
-``sfp_tip_link``.  The desired pose for that frame is the selected
-``sfp_port_N_link`` pose, optionally shifted in the port-local X/Z plane.
-The TCP command is then computed from the live TCP pose relative to
-``sfp_tip_link`` each step.
+``sfp_tip_link``.  The desired pose for that frame comes from the task's
+``insertion_goal`` command.  The TCP command is then computed from the live TCP
+pose relative to ``sfp_tip_link`` each step.
 """
 
 from __future__ import annotations
@@ -103,6 +102,11 @@ def get_action_scale(env: gym.Env, action_dim: int) -> torch.Tensor:
     return scale[:, :action_dim]
 
 
+def get_insertion_goal(env: gym.Env, command_name: str = "insertion_goal"):
+    """Return the task command that owns the desired SFP-tip insertion goal."""
+    return env.command_manager.get_term(command_name)
+
+
 def make_simple_nic_insert_targets(
     env: gym.Env,
     *,
@@ -181,11 +185,15 @@ def make_simple_nic_insert_targets(
 
 def compute_simple_nic_insert_world_targets(
     env: gym.Env,
-    targets: SimpleNicInsertTargets,
+    targets: SimpleNicInsertTargets | None = None,
     *,
     target_name: str = "nic_card",
+    command_name: str = "insertion_goal",
 ) -> SimpleNicInsertWorldTargets:
     """Compute the live world-frame target pose from the current NIC-card pose."""
+    if targets is None:
+        return _world_targets_from_command(env, command_name=command_name)
+
     target = env.scene[target_name]
     card_pos = target.data.root_pos_w
     card_quat = target.data.root_quat_w
@@ -218,6 +226,24 @@ def compute_simple_nic_insert_world_targets(
         port_x_w=port_x,
         port_y_w=port_y,
         port_z_w=port_z,
+    )
+
+
+def _world_targets_from_command(env: gym.Env, command_name: str = "insertion_goal") -> SimpleNicInsertWorldTargets:
+    """Expose the command term as the oracle's world-target dataclass."""
+    goal = get_insertion_goal(env, command_name=command_name)
+    return SimpleNicInsertWorldTargets(
+        final_tip_pos_w=goal.final_tip_pos_w,
+        approach_tip_pos_w=goal.approach_tip_pos_w,
+        target_tip_quat_w=goal.target_tip_quat_w,
+        target_x_w=goal.target_x_w,
+        target_y_w=goal.target_y_w,
+        target_z_w=goal.target_z_w,
+        path_w=goal.path_w,
+        path_length=goal.path_length,
+        port_x_w=goal.port_x_w,
+        port_y_w=goal.port_y_w,
+        port_z_w=goal.port_z_w,
     )
 
 
@@ -255,12 +281,52 @@ def make_simple_nic_insert_state(
     )
 
 
+def reset_simple_nic_insert_state(
+    env: gym.Env,
+    state: SimpleNicInsertState,
+    env_ids: torch.Tensor | list[int] | None = None,
+    *,
+    tcp_body: str = "gripper_tcp",
+    tip_body: str = "sfp_tip_link",
+) -> None:
+    """Reset oracle phase state for envs that IsaacLab has just reset."""
+    if env_ids is None:
+        env_ids = torch.arange(env.num_envs, dtype=torch.long, device=env.device)
+    elif not torch.is_tensor(env_ids):
+        env_ids = torch.tensor(env_ids, dtype=torch.long, device=env.device)
+    else:
+        env_ids = env_ids.to(device=env.device, dtype=torch.long)
+    if env_ids.numel() == 0:
+        return
+
+    robot = env.scene["robot"]
+    tcp_id = _first_body_id(robot, tcp_body)
+    tip_id = _first_body_id(robot, tip_body)
+    tcp_pos_w = robot.data.body_pos_w[env_ids, tcp_id, :].clone()
+    tcp_quat_w = robot.data.body_quat_w[env_ids, tcp_id, :].clone()
+    tip_pos_w = robot.data.body_pos_w[env_ids, tip_id, :].clone()
+    tip_quat_w = robot.data.body_quat_w[env_ids, tip_id, :].clone()
+    tcp_pos_tip, tcp_quat_tip = math_utils.subtract_frame_transforms(
+        tip_pos_w,
+        tip_quat_w,
+        tcp_pos_w,
+        tcp_quat_w,
+    )
+
+    state.phase[env_ids] = int(SimpleNicInsertPhase.APPROACH)
+    state.insert_distance[env_ids] = 0.0
+    state.hold_steps[env_ids] = 0
+    state.tcp_pos_tip[env_ids] = tcp_pos_tip
+    state.tcp_quat_tip[env_ids] = tcp_quat_tip
+
+
 def compute_simple_nic_insert_oracle(
     env: gym.Env,
     action_scale: torch.Tensor,
-    targets: SimpleNicInsertTargets,
-    state: SimpleNicInsertState,
+    targets_or_state: SimpleNicInsertTargets | SimpleNicInsertState,
+    state: SimpleNicInsertState | None = None,
     *,
+    command_name: str = "insertion_goal",
     tcp_body: str = "gripper_tcp",
     tip_body: str = "sfp_tip_link",
     pos_gain: float = 1.2,
@@ -277,6 +343,12 @@ def compute_simple_nic_insert_oracle(
     step_dt: float = 1.0 / 30.0,
 ) -> SimpleNicInsertOracleOutput:
     """Compute one relative-IK action for direct ``sfp_tip_link`` insertion."""
+    if state is None:
+        targets = None
+        state = targets_or_state
+    else:
+        targets = targets_or_state
+
     robot = env.scene["robot"]
     tcp_id = _first_body_id(robot, tcp_body)
     tip_id = _first_body_id(robot, tip_body)
@@ -296,7 +368,7 @@ def compute_simple_nic_insert_oracle(
     state.tcp_pos_tip[:] = tcp_pos_tip
     state.tcp_quat_tip[:] = tcp_quat_tip
 
-    world_targets = compute_simple_nic_insert_world_targets(env, targets)
+    world_targets = compute_simple_nic_insert_world_targets(env, targets, command_name=command_name)
     insert_fraction, target_tip_pos_w = _current_target_tip_position(world_targets, state)
     tip_position_error = torch.linalg.norm(target_tip_pos_w - tip_pos_w, dim=1)
     orientation_error = math_utils.quat_error_magnitude(tip_quat_w, world_targets.target_tip_quat_w)

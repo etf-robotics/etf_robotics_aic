@@ -234,6 +234,93 @@ class PlugInsertedSuccess(ManagerTermBase):
         return self._success_counts >= required_steps
 
 
+class InsertionGoalReachedSuccess(ManagerTermBase):
+    """Stateful success when ``sfp_tip_link`` reaches the commanded insertion goal."""
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._success_counts = torch.zeros(env.num_envs, dtype=torch.int32, device=env.device)
+
+    def reset(self, env_ids=None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
+        self._success_counts[env_ids] = 0
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        command_name: str = "insertion_goal",
+        tip_body: str = "sfp_tip_link",
+        position_threshold: float = 0.003,
+        orientation_threshold: float = math.radians(4.0),
+        required_seconds: float = 0.5,
+    ) -> torch.Tensor:
+        position_error, orientation_error, _ = _insertion_goal_tip_errors(
+            env,
+            asset_cfg=asset_cfg,
+            command_name=command_name,
+            tip_body=tip_body,
+        )
+        reached = (position_error <= position_threshold) & (orientation_error <= orientation_threshold)
+        self._success_counts = torch.where(reached, self._success_counts + 1, torch.zeros_like(self._success_counts))
+        required_steps = max(1, int(math.ceil(required_seconds / _env_step_dt(env))))
+        return self._success_counts >= required_steps
+
+
+class InsertionGoalStationaryFailure(ManagerTermBase):
+    """Failure when the plug tip is stationary outside the commanded goal."""
+
+    def __init__(self, cfg, env: ManagerBasedRLEnv):
+        super().__init__(cfg, env)
+        self._anchor_pos_w = torch.zeros((env.num_envs, 3), dtype=torch.float32, device=env.device)
+        self._stable_counts = torch.zeros(env.num_envs, dtype=torch.int32, device=env.device)
+        self._initialized = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+
+    def reset(self, env_ids=None) -> None:
+        if env_ids is None:
+            env_ids = slice(None)
+        self._anchor_pos_w[env_ids] = 0.0
+        self._stable_counts[env_ids] = 0
+        self._initialized[env_ids] = False
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+        command_name: str = "insertion_goal",
+        tip_body: str = "sfp_tip_link",
+        movement_threshold: float = 0.001,
+        success_position_threshold: float = 0.003,
+        required_seconds: float = 1.0,
+    ) -> torch.Tensor:
+        position_error, _, tip_pos_w = _insertion_goal_tip_errors(
+            env,
+            asset_cfg=asset_cfg,
+            command_name=command_name,
+            tip_body=tip_body,
+        )
+
+        if self._anchor_pos_w.dtype != tip_pos_w.dtype or self._anchor_pos_w.device != tip_pos_w.device:
+            self._anchor_pos_w = self._anchor_pos_w.to(dtype=tip_pos_w.dtype, device=tip_pos_w.device)
+
+        uninitialized = ~self._initialized
+        self._anchor_pos_w = torch.where(uninitialized.unsqueeze(1), tip_pos_w, self._anchor_pos_w)
+        self._initialized = torch.ones_like(self._initialized)
+
+        moved_too_far = torch.linalg.norm(tip_pos_w - self._anchor_pos_w, dim=1) > movement_threshold
+        reset_window = uninitialized | moved_too_far
+        self._anchor_pos_w = torch.where(reset_window.unsqueeze(1), tip_pos_w, self._anchor_pos_w)
+
+        one_step = torch.ones_like(self._stable_counts)
+        self._stable_counts = torch.where(reset_window, one_step, self._stable_counts + 1)
+
+        required_steps = max(1, int(math.ceil(required_seconds / _env_step_dt(env))))
+        stationary = self._stable_counts >= required_steps
+        outside_goal = position_error > success_position_threshold
+        return stationary & outside_goal
+
+
 class GripperStationarySuccess(ManagerTermBase):
     """Stateful success when a gripper body stays within a small position window."""
 
@@ -288,6 +375,25 @@ class GripperStationarySuccess(ManagerTermBase):
 
         required_steps = max(1, int(math.ceil(required_seconds / _env_step_dt(env))))
         return self._stable_counts >= required_steps
+
+
+def _insertion_goal_tip_errors(
+    env: ManagerBasedRLEnv,
+    *,
+    asset_cfg: SceneEntityCfg,
+    command_name: str,
+    tip_body: str,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    robot: Articulation = env.scene[asset_cfg.name]
+    goal = env.command_manager.get_term(command_name)
+    tip_id = _first_body_id(robot, asset_cfg, tip_body)
+
+    tip_pos_w = robot.data.body_pos_w[:, tip_id, :]
+    tip_quat_w = robot.data.body_quat_w[:, tip_id, :]
+
+    position_error = torch.linalg.norm(tip_pos_w - goal.final_tip_pos_w, dim=1)
+    orientation_error = quat_error_magnitude(tip_quat_w, goal.target_tip_quat_w)
+    return position_error, orientation_error, tip_pos_w
 
 
 def _env_step_dt(env: ManagerBasedRLEnv) -> float:

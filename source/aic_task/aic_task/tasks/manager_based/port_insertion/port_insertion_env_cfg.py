@@ -5,11 +5,13 @@
 
 """V1 port insertion task configuration.
 
-This task keeps the shared AIC scene and marks success when the gripper has
-stayed still for a short window.
+This task keeps the shared AIC scene and uses a command-owned insertion goal
+for oracle control, success, and failure termination.
 """
 
 from __future__ import annotations
+
+import math
 
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
@@ -20,6 +22,7 @@ from . import mdp
 from .aic_task_env_cfg import (
     AICTaskEnvCfg,
     AICTaskSceneCfg,
+    CommandsCfg,
     ObservationsCfg,
     RewardsCfg,
     TerminationsCfg,
@@ -40,6 +43,19 @@ class PortInsertionSceneCfg(AICTaskSceneCfg):
 @configclass
 class PortInsertionObservationsCfg(ObservationsCfg):
     """Start from the shared visual/robot observations."""
+
+
+@configclass
+class PortInsertionCommandsCfg(CommandsCfg):
+    """Task goal for inserting the SFP module into NIC port 0."""
+
+    insertion_goal = mdp.InsertionGoalCommandCfg(
+        target_name=TARGET_NAME,
+        port_name=PORT_NAME,
+        port_index=0,
+        target_xz_offset=(0.0, 0.001),
+        approach_offset_local=(0.0, -0.09, 0.0),
+    )
 
 
 @configclass
@@ -68,17 +84,31 @@ class PortInsertionRewardsCfg(RewardsCfg):
         },
     )
 
+
 @configclass
 class PortInsertionTerminationsCfg(TerminationsCfg):
-    """Insertion success is a stable gripper for 2.5 seconds."""
+    """Command-aware success, failure, and timeout for insertion."""
 
     success = DoneTerm(
-        func=mdp.GripperStationarySuccess,
+        func=mdp.InsertionGoalReachedSuccess,
         params={
-            "asset_cfg": SceneEntityCfg("robot", body_names="gripper_tcp"),
-            "movement_threshold": 0.0,
-            "orientation_threshold": 0.0,
-            "required_seconds": 5.0,
+            "asset_cfg": SceneEntityCfg("robot"),
+            "command_name": "insertion_goal",
+            "tip_body": PLUG_TIP_BODY,
+            "position_threshold": 0.003,
+            "orientation_threshold": math.radians(4.0),
+            "required_seconds": 0.5,
+        },
+    )
+    failed_stationary = DoneTerm(
+        func=mdp.InsertionGoalStationaryFailure,
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "command_name": "insertion_goal",
+            "tip_body": PLUG_TIP_BODY,
+            "movement_threshold": 0.001,
+            "success_position_threshold": 0.003,
+            "required_seconds": 1.0,
         },
     )
 
@@ -97,6 +127,7 @@ class PortInsertionEnvCfg(AICTaskEnvCfg):
         filter_collisions=False,
     )
     observations: PortInsertionObservationsCfg = PortInsertionObservationsCfg()
+    commands: PortInsertionCommandsCfg = PortInsertionCommandsCfg()
     rewards: PortInsertionRewardsCfg = PortInsertionRewardsCfg()
     terminations: PortInsertionTerminationsCfg = PortInsertionTerminationsCfg()
 
