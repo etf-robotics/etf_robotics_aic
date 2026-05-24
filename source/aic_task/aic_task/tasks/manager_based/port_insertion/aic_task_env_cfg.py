@@ -332,14 +332,7 @@ class EventCfg:
     #     },
     # )
 
-    randomize_light = EventTerm(
-        func=randomize_dome_light,
-        mode="reset",
-        params={
-            "intensity_range": (1500.0, 3500.0),
-            "color_range": ((0.5, 0.5, 0.5), (1.0, 1.0, 1.0)),
-        },
-    )
+    randomize_light = None
 
     randomize_board_and_parts = EventTerm(
         func=randomize_board_and_parts,
@@ -348,9 +341,9 @@ class EventCfg:
             "board_scene_name": "task_board",
             "board_default_pos": (0.2837, 0.229, 0.0),
             "board_range": {
-                "x": (-0.025, 0.025),
-                "y": (-0.025, 0.025),
-                "yaw": (-0.262, 0.262),
+                "x": (-0.04, 0.04),
+                "y": (-0.04, 0.04),
+                "yaw": (-0.35, 0.35),
             },
             "parts": [
                 {
