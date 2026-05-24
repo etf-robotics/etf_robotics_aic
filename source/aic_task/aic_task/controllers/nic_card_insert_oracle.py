@@ -21,9 +21,12 @@ import isaaclab.utils.math as math_utils
 class SimpleNicInsertPhase(IntEnum):
     """Phases for the demo-only NIC card insertion oracle."""
 
-    APPROACH = 0
-    INSERT = 1
-    HOLD = 2
+    SEARCH_FOR_PORT = 0
+    PLAN_APPROACH = 1
+    APPROACH_P = 2
+    APPROACH_P_R = 3
+    INSERT = 4
+    HOLD = 5
 
 
 @dataclass
@@ -47,12 +50,15 @@ class SimpleNicInsertWorldTargets:
     """World-frame target pose and insertion path for the selected port."""
 
     final_tip_pos_w: torch.Tensor
+    nominal_approach_tip_pos_w: torch.Tensor
     approach_tip_pos_w: torch.Tensor
     target_tip_quat_w: torch.Tensor
+    approach_tip_quat_w: torch.Tensor
     target_x_w: torch.Tensor
     target_y_w: torch.Tensor
     target_z_w: torch.Tensor
     path_w: torch.Tensor
+    path_axis_w: torch.Tensor
     path_length: torch.Tensor
     port_x_w: torch.Tensor
     port_y_w: torch.Tensor
@@ -68,6 +74,22 @@ class SimpleNicInsertState:
     hold_steps: torch.Tensor
     tcp_pos_tip: torch.Tensor
     tcp_quat_tip: torch.Tensor
+    prev_tip_pos_w: torch.Tensor
+    prev_tip_vel_w: torch.Tensor
+    plan_valid: torch.Tensor
+    plan_start_pos_w: torch.Tensor
+    plan_start_vel_w: torch.Tensor
+    plan_start_acc_w: torch.Tensor
+    plan_end_pos_w: torch.Tensor
+    plan_end_vel_w: torch.Tensor
+    plan_end_acc_w: torch.Tensor
+    plan_start_quat_w: torch.Tensor
+    plan_approach_quat_w: torch.Tensor
+    plan_final_quat_w: torch.Tensor
+    plan_elapsed: torch.Tensor
+    plan_duration: torch.Tensor
+    plan_rot_start: torch.Tensor
+    plan_rot_duration: torch.Tensor
 
 
 @dataclass
@@ -214,14 +236,18 @@ def compute_simple_nic_insert_world_targets(
     target_z = _local_axis_w(target_quat, (0.0, 0.0, 1.0))
     path = final - approach
     path_length = torch.linalg.norm(path, dim=1, keepdim=True).clamp_min(1.0e-9)
+    path_axis = path / path_length
     return SimpleNicInsertWorldTargets(
         final_tip_pos_w=final,
+        nominal_approach_tip_pos_w=approach,
         approach_tip_pos_w=approach,
         target_tip_quat_w=target_quat,
+        approach_tip_quat_w=target_quat,
         target_x_w=target_x,
         target_y_w=target_y,
         target_z_w=target_z,
         path_w=path,
+        path_axis_w=path_axis,
         path_length=path_length,
         port_x_w=port_x,
         port_y_w=port_y,
@@ -232,14 +258,19 @@ def compute_simple_nic_insert_world_targets(
 def _world_targets_from_command(env: gym.Env, command_name: str = "insertion_goal") -> SimpleNicInsertWorldTargets:
     """Expose the command term as the oracle's world-target dataclass."""
     goal = get_insertion_goal(env, command_name=command_name)
+    nominal_approach = getattr(goal, "nominal_approach_tip_pos_w", goal.approach_tip_pos_w)
+    approach_quat = getattr(goal, "approach_tip_quat_w", goal.target_tip_quat_w)
     return SimpleNicInsertWorldTargets(
         final_tip_pos_w=goal.final_tip_pos_w,
+        nominal_approach_tip_pos_w=nominal_approach,
         approach_tip_pos_w=goal.approach_tip_pos_w,
         target_tip_quat_w=goal.target_tip_quat_w,
+        approach_tip_quat_w=approach_quat,
         target_x_w=goal.target_x_w,
         target_y_w=goal.target_y_w,
         target_z_w=goal.target_z_w,
         path_w=goal.path_w,
+        path_axis_w=getattr(goal, "path_axis_w", goal.path_w / goal.path_length),
         path_length=goal.path_length,
         port_x_w=goal.port_x_w,
         port_y_w=goal.port_y_w,
@@ -267,10 +298,12 @@ def make_simple_nic_insert_state(
         tcp_pos_w,
         tcp_quat_w,
     )
+    identity_quat = torch.zeros_like(tip_quat_w)
+    identity_quat[:, 0] = 1.0
     return SimpleNicInsertState(
         phase=torch.full(
             (env.num_envs,),
-            int(SimpleNicInsertPhase.APPROACH),
+            int(SimpleNicInsertPhase.SEARCH_FOR_PORT),
             dtype=torch.long,
             device=env.device,
         ),
@@ -278,6 +311,22 @@ def make_simple_nic_insert_state(
         hold_steps=torch.zeros((env.num_envs,), dtype=torch.long, device=env.device),
         tcp_pos_tip=tcp_pos_tip,
         tcp_quat_tip=tcp_quat_tip,
+        prev_tip_pos_w=tip_pos_w.clone(),
+        prev_tip_vel_w=torch.zeros_like(tip_pos_w),
+        plan_valid=torch.zeros((env.num_envs,), dtype=torch.bool, device=env.device),
+        plan_start_pos_w=torch.zeros_like(tip_pos_w),
+        plan_start_vel_w=torch.zeros_like(tip_pos_w),
+        plan_start_acc_w=torch.zeros_like(tip_pos_w),
+        plan_end_pos_w=torch.zeros_like(tip_pos_w),
+        plan_end_vel_w=torch.zeros_like(tip_pos_w),
+        plan_end_acc_w=torch.zeros_like(tip_pos_w),
+        plan_start_quat_w=identity_quat.clone(),
+        plan_approach_quat_w=identity_quat.clone(),
+        plan_final_quat_w=identity_quat.clone(),
+        plan_elapsed=torch.zeros((env.num_envs, 1), dtype=tcp_pos_w.dtype, device=env.device),
+        plan_duration=torch.ones((env.num_envs, 1), dtype=tcp_pos_w.dtype, device=env.device),
+        plan_rot_start=torch.zeros((env.num_envs, 1), dtype=tcp_pos_w.dtype, device=env.device),
+        plan_rot_duration=torch.zeros((env.num_envs, 1), dtype=tcp_pos_w.dtype, device=env.device),
     )
 
 
@@ -313,11 +362,30 @@ def reset_simple_nic_insert_state(
         tcp_quat_w,
     )
 
-    state.phase[env_ids] = int(SimpleNicInsertPhase.APPROACH)
+    state.phase[env_ids] = int(SimpleNicInsertPhase.SEARCH_FOR_PORT)
     state.insert_distance[env_ids] = 0.0
     state.hold_steps[env_ids] = 0
     state.tcp_pos_tip[env_ids] = tcp_pos_tip
     state.tcp_quat_tip[env_ids] = tcp_quat_tip
+    state.prev_tip_pos_w[env_ids] = tip_pos_w
+    state.prev_tip_vel_w[env_ids] = 0.0
+    state.plan_valid[env_ids] = False
+    state.plan_start_pos_w[env_ids] = 0.0
+    state.plan_start_vel_w[env_ids] = 0.0
+    state.plan_start_acc_w[env_ids] = 0.0
+    state.plan_end_pos_w[env_ids] = 0.0
+    state.plan_end_vel_w[env_ids] = 0.0
+    state.plan_end_acc_w[env_ids] = 0.0
+    state.plan_start_quat_w[env_ids] = 0.0
+    state.plan_start_quat_w[env_ids, 0] = 1.0
+    state.plan_approach_quat_w[env_ids] = 0.0
+    state.plan_approach_quat_w[env_ids, 0] = 1.0
+    state.plan_final_quat_w[env_ids] = 0.0
+    state.plan_final_quat_w[env_ids, 0] = 1.0
+    state.plan_elapsed[env_ids] = 0.0
+    state.plan_duration[env_ids] = 1.0
+    state.plan_rot_start[env_ids] = 0.0
+    state.plan_rot_duration[env_ids] = 0.0
 
 
 def compute_simple_nic_insert_oracle(
@@ -334,6 +402,14 @@ def compute_simple_nic_insert_oracle(
     max_pos_delta: float = 0.020,
     insert_max_pos_delta: float = 0.002,
     max_rot_delta: float = 0.025,
+    port_visible: bool | torch.Tensor = True,
+    approach_nominal_speed: float = 0.08,
+    approach_end_speed: float = 0.005,
+    approach_min_duration: float = 1.0,
+    approach_max_duration: float = 5.0,
+    approach_rot_speed: float = math.radians(30.0),
+    approach_rot_min_duration: float = 0.5,
+    approach_rot_margin: float = 0.25,
     approach_threshold: float = 0.015,
     insert_lateral_threshold: float = 0.010,
     insert_orientation_threshold: float = math.radians(4.0),
@@ -356,6 +432,8 @@ def compute_simple_nic_insert_oracle(
     tcp_quat_w = robot.data.body_quat_w[:, tcp_id, :]
     tip_pos_w = robot.data.body_pos_w[:, tip_id, :]
     tip_quat_w = robot.data.body_quat_w[:, tip_id, :]
+    safe_step_dt = max(float(step_dt), 1.0e-6)
+    tip_vel_w = _clamp_vector_norm((tip_pos_w - state.prev_tip_pos_w) / safe_step_dt, max_pos_delta / safe_step_dt)
 
     # Recompute this live.  The cable/tool can flex, so a cached TCP-to-tip
     # transform is exactly the stale-transform trap we hit during debugging.
@@ -369,35 +447,77 @@ def compute_simple_nic_insert_oracle(
     state.tcp_quat_tip[:] = tcp_quat_tip
 
     world_targets = compute_simple_nic_insert_world_targets(env, targets, command_name=command_name)
-    insert_fraction, target_tip_pos_w = _current_target_tip_position(world_targets, state)
+
+    visible_mask = _as_bool_mask(port_visible, env.num_envs, device=env.device)
+    search_ready = (state.phase == int(SimpleNicInsertPhase.SEARCH_FOR_PORT)) & visible_mask
+    state.phase[search_ready] = int(SimpleNicInsertPhase.PLAN_APPROACH)
+
+    plan_mask = state.phase == int(SimpleNicInsertPhase.PLAN_APPROACH)
+    if bool(torch.any(plan_mask)):
+        _plan_approach_trajectory(
+            state,
+            world_targets,
+            tip_pos_w,
+            tip_vel_w,
+            tip_quat_w,
+            plan_mask,
+            approach_nominal_speed=approach_nominal_speed,
+            approach_end_speed=approach_end_speed,
+            approach_min_duration=approach_min_duration,
+            approach_max_duration=approach_max_duration,
+            approach_rot_speed=approach_rot_speed,
+            approach_rot_min_duration=approach_rot_min_duration,
+            approach_rot_margin=approach_rot_margin,
+        )
+
+    approach_motion_mask = (state.phase == int(SimpleNicInsertPhase.APPROACH_P)) | (
+        state.phase == int(SimpleNicInsertPhase.APPROACH_P_R)
+    )
+    start_rotation = approach_motion_mask & (state.plan_elapsed >= state.plan_rot_start).squeeze(1)
+    state.phase[start_rotation] = int(SimpleNicInsertPhase.APPROACH_P_R)
+
+    insert_fraction, target_tip_pos_w, target_tip_quat_w = _current_target_tip_pose(
+        world_targets,
+        state,
+        tip_pos_w,
+        tip_quat_w,
+    )
     tip_position_error = torch.linalg.norm(target_tip_pos_w - tip_pos_w, dim=1)
-    orientation_error = math_utils.quat_error_magnitude(tip_quat_w, world_targets.target_tip_quat_w)
+    orientation_error = math_utils.quat_error_magnitude(tip_quat_w, target_tip_quat_w)
+    final_orientation_error = math_utils.quat_error_magnitude(tip_quat_w, world_targets.target_tip_quat_w)
     path_distance, closest_w, path_lateral_error = _project_tip_to_path(world_targets, tip_pos_w)
     path_error_local = _path_error_in_port_frame(world_targets, tip_pos_w, closest_w)
 
-    reached_approach = (
-        (state.phase == int(SimpleNicInsertPhase.APPROACH))
+    finished_approach_path = (
+        ((state.phase == int(SimpleNicInsertPhase.APPROACH_P)) | (state.phase == int(SimpleNicInsertPhase.APPROACH_P_R)))
+        & (state.plan_elapsed.squeeze(1) >= state.plan_duration.squeeze(1))
         & (tip_position_error <= approach_threshold)
         & (orientation_error <= insert_orientation_threshold)
     )
-    state.phase[reached_approach] = int(SimpleNicInsertPhase.INSERT)
+    state.phase[finished_approach_path] = int(SimpleNicInsertPhase.INSERT)
 
     insert_mask = state.phase == int(SimpleNicInsertPhase.INSERT)
     advance_mask = (
         insert_mask
         & (path_lateral_error <= insert_lateral_threshold)
-        & (orientation_error <= insert_orientation_threshold)
+        & (final_orientation_error <= insert_orientation_threshold)
     )
     state.insert_distance[insert_mask] = path_distance[insert_mask]
     step_distance = max(insert_speed * step_dt, insert_lookahead)
     state.insert_distance[advance_mask] = path_distance[advance_mask] + step_distance
     state.insert_distance[:] = torch.minimum(state.insert_distance, world_targets.path_length)
 
-    insert_fraction, target_tip_pos_w = _current_target_tip_position(world_targets, state)
+    insert_fraction, target_tip_pos_w, target_tip_quat_w = _current_target_tip_pose(
+        world_targets,
+        state,
+        tip_pos_w,
+        tip_quat_w,
+    )
     tip_position_error = torch.linalg.norm(target_tip_pos_w - tip_pos_w, dim=1)
     path_distance, closest_w, path_lateral_error = _project_tip_to_path(world_targets, tip_pos_w)
     path_error_local = _path_error_in_port_frame(world_targets, tip_pos_w, closest_w)
-    orientation_error = math_utils.quat_error_magnitude(tip_quat_w, world_targets.target_tip_quat_w)
+    orientation_error = math_utils.quat_error_magnitude(tip_quat_w, target_tip_quat_w)
+    final_orientation_error = math_utils.quat_error_magnitude(tip_quat_w, world_targets.target_tip_quat_w)
     x_axis_error = _axis_angle(_local_axis_w(tip_quat_w, (1.0, 0.0, 0.0)), world_targets.target_x_w)
     y_axis_error = _axis_angle(_local_axis_w(tip_quat_w, (0.0, 1.0, 0.0)), world_targets.target_y_w)
     z_axis_error = _axis_angle(_local_axis_w(tip_quat_w, (0.0, 0.0, 1.0)), world_targets.target_z_w)
@@ -406,16 +526,24 @@ def compute_simple_nic_insert_oracle(
         (state.phase == int(SimpleNicInsertPhase.INSERT))
         & (insert_fraction.squeeze(1) >= 1.0)
         & (tip_position_error <= final_threshold)
-        & (orientation_error <= insert_orientation_threshold)
+        & (final_orientation_error <= insert_orientation_threshold)
     )
     state.phase[reached_final] = int(SimpleNicInsertPhase.HOLD)
     state.hold_steps[state.phase == int(SimpleNicInsertPhase.HOLD)] += 1
+
+    approach_motion_mask = (state.phase == int(SimpleNicInsertPhase.APPROACH_P)) | (
+        state.phase == int(SimpleNicInsertPhase.APPROACH_P_R)
+    )
+    state.plan_elapsed[approach_motion_mask] = torch.minimum(
+        state.plan_elapsed[approach_motion_mask] + safe_step_dt,
+        state.plan_duration[approach_motion_mask],
+    )
 
     # Desired TCP pose is just desired tip pose composed with the live
     # TCP-in-tip transform: T_world_tcp_des = T_world_tip_des * T_tip_tcp_live.
     desired_tcp_pos_w, desired_tcp_quat_w = math_utils.combine_frame_transforms(
         target_tip_pos_w,
-        world_targets.target_tip_quat_w,
+        target_tip_quat_w,
         tcp_pos_tip,
         tcp_quat_tip,
     )
@@ -440,6 +568,8 @@ def compute_simple_nic_insert_oracle(
         max_rot_delta=max_rot_delta,
     )
     raw_action = processed_action / torch.clamp(action_scale, min=1.0e-9)
+    state.prev_tip_pos_w[:] = tip_pos_w
+    state.prev_tip_vel_w[:] = tip_vel_w
     return SimpleNicInsertOracleOutput(
         raw_action=raw_action,
         processed_action=processed_action,
@@ -461,35 +591,181 @@ def compute_simple_nic_insert_oracle(
     )
 
 
-def _current_target_tip_position(
+def _plan_approach_trajectory(
+    state: SimpleNicInsertState,
+    world_targets: SimpleNicInsertWorldTargets,
+    tip_pos_w: torch.Tensor,
+    tip_vel_w: torch.Tensor,
+    tip_quat_w: torch.Tensor,
+    plan_mask: torch.Tensor,
+    *,
+    approach_nominal_speed: float,
+    approach_end_speed: float,
+    approach_min_duration: float,
+    approach_max_duration: float,
+    approach_rot_speed: float,
+    approach_rot_min_duration: float,
+    approach_rot_margin: float,
+) -> None:
+    """Latch a per-env quintic approach plan from the live tip pose."""
+    env_ids = plan_mask.nonzero(as_tuple=False).squeeze(-1)
+    if env_ids.numel() == 0:
+        return
+
+    start_pos = tip_pos_w[env_ids].clone()
+    end_pos = world_targets.approach_tip_pos_w[env_ids].clone()
+    distance = torch.linalg.norm(end_pos - start_pos, dim=1, keepdim=True)
+    nominal_speed = max(float(approach_nominal_speed), 1.0e-6)
+    min_duration = max(float(approach_min_duration), 1.0e-3)
+    max_duration = max(min_duration, float(approach_max_duration))
+    duration = torch.clamp(distance / nominal_speed, min=min_duration, max=max_duration)
+
+    state.plan_start_pos_w[env_ids] = start_pos
+    state.plan_start_vel_w[env_ids] = tip_vel_w[env_ids]
+    state.plan_start_acc_w[env_ids] = 0.0
+    state.plan_end_pos_w[env_ids] = end_pos
+    state.plan_end_vel_w[env_ids] = float(approach_end_speed) * world_targets.path_axis_w[env_ids]
+    state.plan_end_acc_w[env_ids] = 0.0
+    state.plan_start_quat_w[env_ids] = _normalize_rows(tip_quat_w[env_ids])
+    state.plan_approach_quat_w[env_ids] = _normalize_rows(world_targets.approach_tip_quat_w[env_ids])
+    state.plan_final_quat_w[env_ids] = _normalize_rows(world_targets.target_tip_quat_w[env_ids])
+    state.plan_elapsed[env_ids] = 0.0
+    state.plan_duration[env_ids] = duration
+
+    rot_angle = math_utils.quat_error_magnitude(
+        state.plan_start_quat_w[env_ids],
+        state.plan_approach_quat_w[env_ids],
+    ).unsqueeze(1)
+    rot_speed = max(float(approach_rot_speed), 1.0e-6)
+    rot_duration = rot_angle / rot_speed
+    has_rotation = rot_angle > 1.0e-5
+    rot_duration = torch.where(
+        has_rotation,
+        torch.clamp(rot_duration, min=max(0.0, float(approach_rot_min_duration))),
+        torch.zeros_like(rot_duration),
+    )
+    rot_duration = torch.minimum(rot_duration, duration)
+    rot_start = torch.clamp(duration - rot_duration - max(0.0, float(approach_rot_margin)), min=0.0)
+    state.plan_rot_duration[env_ids] = rot_duration
+    state.plan_rot_start[env_ids] = rot_start
+    state.plan_valid[env_ids] = True
+    state.phase[env_ids] = torch.where(
+        rot_start.squeeze(1) <= 1.0e-6,
+        torch.full_like(env_ids, int(SimpleNicInsertPhase.APPROACH_P_R)),
+        torch.full_like(env_ids, int(SimpleNicInsertPhase.APPROACH_P)),
+    )
+
+
+def _current_target_tip_pose(
     world_targets: SimpleNicInsertWorldTargets,
     state: SimpleNicInsertState,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    live_tip_pos_w: torch.Tensor,
+    live_tip_quat_w: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     insert_fraction = (state.insert_distance / world_targets.path_length).clamp(0.0, 1.0)
-    insert_target_w = world_targets.approach_tip_pos_w + world_targets.path_w * insert_fraction
-    target_w = torch.where(
-        (state.phase == int(SimpleNicInsertPhase.APPROACH)).unsqueeze(1),
-        world_targets.approach_tip_pos_w,
-        insert_target_w,
+    insert_target_w = world_targets.nominal_approach_tip_pos_w + world_targets.path_w * insert_fraction
+    target_pos_w = insert_target_w
+    target_quat_w = world_targets.target_tip_quat_w
+
+    search_mask = (state.phase == int(SimpleNicInsertPhase.SEARCH_FOR_PORT)).unsqueeze(1)
+    target_pos_w = torch.where(search_mask, live_tip_pos_w, target_pos_w)
+    target_quat_w = torch.where(search_mask, live_tip_quat_w, target_quat_w)
+
+    approach_mask = (
+        (state.phase == int(SimpleNicInsertPhase.APPROACH_P))
+        | (state.phase == int(SimpleNicInsertPhase.APPROACH_P_R))
+    ).unsqueeze(1)
+    approach_pos = _quintic_position(
+        state.plan_start_pos_w,
+        state.plan_start_vel_w,
+        state.plan_start_acc_w,
+        state.plan_end_pos_w,
+        state.plan_end_vel_w,
+        state.plan_end_acc_w,
+        state.plan_duration,
+        state.plan_elapsed,
     )
-    target_w = torch.where(
-        (state.phase == int(SimpleNicInsertPhase.HOLD)).unsqueeze(1),
-        world_targets.final_tip_pos_w,
-        target_w,
+    target_pos_w = torch.where(approach_mask, approach_pos, target_pos_w)
+
+    no_rotation_mask = (state.phase == int(SimpleNicInsertPhase.APPROACH_P)).unsqueeze(1)
+    target_quat_w = torch.where(no_rotation_mask, state.plan_start_quat_w, target_quat_w)
+
+    rotation_mask = (state.phase == int(SimpleNicInsertPhase.APPROACH_P_R)).unsqueeze(1)
+    rot_den = torch.clamp(state.plan_rot_duration, min=1.0e-6)
+    rot_progress = ((state.plan_elapsed - state.plan_rot_start) / rot_den).clamp(0.0, 1.0)
+    rot_progress = torch.where(state.plan_rot_duration <= 1.0e-6, torch.ones_like(rot_progress), rot_progress)
+    approach_quat = _quat_slerp(
+        state.plan_start_quat_w,
+        state.plan_approach_quat_w,
+        _smooth5(rot_progress),
     )
-    return insert_fraction, target_w
+    target_quat_w = torch.where(rotation_mask, approach_quat, target_quat_w)
+
+    hold_mask = (state.phase == int(SimpleNicInsertPhase.HOLD)).unsqueeze(1)
+    target_pos_w = torch.where(hold_mask, world_targets.final_tip_pos_w, target_pos_w)
+    target_quat_w = torch.where(hold_mask, world_targets.target_tip_quat_w, target_quat_w)
+    return insert_fraction, target_pos_w, target_quat_w
+
+
+def _quintic_position(
+    p0: torch.Tensor,
+    v0: torch.Tensor,
+    a0: torch.Tensor,
+    p1: torch.Tensor,
+    v1: torch.Tensor,
+    a1: torch.Tensor,
+    duration: torch.Tensor,
+    elapsed: torch.Tensor,
+) -> torch.Tensor:
+    """Evaluate a quintic polynomial with position, velocity, and acceleration constraints."""
+    duration = torch.clamp(duration, min=1.0e-6)
+    t = torch.minimum(elapsed, duration)
+    a = p1 - (p0 + v0 * duration + 0.5 * a0 * duration * duration)
+    b = v1 - (v0 + a0 * duration)
+    c = a1 - a0
+    duration2 = duration * duration
+    duration3 = duration2 * duration
+    duration4 = duration3 * duration
+    duration5 = duration4 * duration
+    c3 = (10.0 * a - 4.0 * b * duration + 0.5 * c * duration2) / duration3
+    c4 = (-15.0 * a + 7.0 * b * duration - c * duration2) / duration4
+    c5 = (6.0 * a - 3.0 * b * duration + 0.5 * c * duration2) / duration5
+    return p0 + v0 * t + 0.5 * a0 * t * t + c3 * t**3 + c4 * t**4 + c5 * t**5
+
+
+def _smooth5(progress: torch.Tensor) -> torch.Tensor:
+    progress = progress.clamp(0.0, 1.0)
+    return progress**3 * (10.0 - 15.0 * progress + 6.0 * progress * progress)
+
+
+def _quat_slerp(q0: torch.Tensor, q1: torch.Tensor, progress: torch.Tensor) -> torch.Tensor:
+    """Batch quaternion slerp for Isaac wxyz quaternions."""
+    q0 = _normalize_rows(q0)
+    q1 = _normalize_rows(q1)
+    dot = torch.sum(q0 * q1, dim=1, keepdim=True)
+    q1 = torch.where(dot < 0.0, -q1, q1)
+    dot = torch.abs(dot).clamp(-1.0, 1.0)
+    progress = progress.reshape(-1, 1).to(dtype=q0.dtype, device=q0.device)
+    linear = _normalize_rows(q0 + progress * (q1 - q0))
+    theta_0 = torch.acos(dot)
+    sin_theta_0 = torch.sin(theta_0)
+    theta = theta_0 * progress
+    s0 = torch.sin(theta_0 - theta) / torch.clamp(sin_theta_0, min=1.0e-6)
+    s1 = torch.sin(theta) / torch.clamp(sin_theta_0, min=1.0e-6)
+    spherical = _normalize_rows(s0 * q0 + s1 * q1)
+    return torch.where(dot > 0.9995, linear, spherical)
 
 
 def _project_tip_to_path(
     world_targets: SimpleNicInsertWorldTargets,
     tip_pos_w: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    path_axis_w = world_targets.path_w / world_targets.path_length
-    tip_from_approach = tip_pos_w - world_targets.approach_tip_pos_w
+    path_axis_w = world_targets.path_axis_w
+    tip_from_approach = tip_pos_w - world_targets.nominal_approach_tip_pos_w
     path_distance = torch.sum(tip_from_approach * path_axis_w, dim=1, keepdim=True)
     path_distance = torch.clamp(path_distance, min=0.0)
     path_distance = torch.minimum(path_distance, world_targets.path_length)
-    closest_w = world_targets.approach_tip_pos_w + path_axis_w * path_distance
+    closest_w = world_targets.nominal_approach_tip_pos_w + path_axis_w * path_distance
     path_lateral_error = torch.linalg.norm(tip_pos_w - closest_w, dim=1)
     return path_distance, closest_w, path_lateral_error
 
@@ -622,6 +898,14 @@ def _axis_angle(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     b = _normalize_rows(b)
     dot = torch.clamp(torch.sum(a * b, dim=1), min=-1.0, max=1.0)
     return torch.acos(dot)
+
+
+def _as_bool_mask(value: bool | torch.Tensor, num_envs: int, *, device: str) -> torch.Tensor:
+    if torch.is_tensor(value):
+        if value.ndim == 0:
+            return torch.full((num_envs,), bool(value.item()), dtype=torch.bool, device=device)
+        return value.to(device=device, dtype=torch.bool).reshape(-1)[:num_envs]
+    return torch.full((num_envs,), bool(value), dtype=torch.bool, device=device)
 
 
 def _normalize(vector: torch.Tensor) -> torch.Tensor:

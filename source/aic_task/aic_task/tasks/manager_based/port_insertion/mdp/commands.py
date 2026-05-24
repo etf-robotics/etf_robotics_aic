@@ -35,17 +35,23 @@ class InsertionGoalCommand(CommandTerm):
         device = self.target.data.root_pos_w.device
 
         self.final_tip_pos_root = torch.zeros((self.num_envs, 3), dtype=dtype, device=device)
+        self.nominal_approach_tip_pos_root = torch.zeros((self.num_envs, 3), dtype=dtype, device=device)
         self.approach_tip_pos_root = torch.zeros((self.num_envs, 3), dtype=dtype, device=device)
         self.port_quat_root = torch.zeros((self.num_envs, 4), dtype=dtype, device=device)
         self.port_quat_root[:, 0] = 1.0
+        self.approach_tip_quat_root = torch.zeros((self.num_envs, 4), dtype=dtype, device=device)
+        self.approach_tip_quat_root[:, 0] = 1.0
         self.port_x_root = torch.zeros((self.num_envs, 3), dtype=dtype, device=device)
         self.port_y_root = torch.zeros((self.num_envs, 3), dtype=dtype, device=device)
         self.port_z_root = torch.zeros((self.num_envs, 3), dtype=dtype, device=device)
 
         self.final_tip_pos_w = torch.zeros_like(self.final_tip_pos_root)
+        self.nominal_approach_tip_pos_w = torch.zeros_like(self.nominal_approach_tip_pos_root)
         self.approach_tip_pos_w = torch.zeros_like(self.approach_tip_pos_root)
         self.target_tip_quat_w = torch.zeros_like(self.port_quat_root)
         self.target_tip_quat_w[:, 0] = 1.0
+        self.approach_tip_quat_w = torch.zeros_like(self.approach_tip_quat_root)
+        self.approach_tip_quat_w[:, 0] = 1.0
         self.target_x_w = torch.zeros_like(self.port_x_root)
         self.target_y_w = torch.zeros_like(self.port_y_root)
         self.target_z_w = torch.zeros_like(self.port_z_root)
@@ -57,9 +63,10 @@ class InsertionGoalCommand(CommandTerm):
         self.port_z_w = torch.zeros_like(self.port_z_root)
 
         # Tensor schema:
-        # final_tip_pos_w(3), target_tip_quat_w(4), approach_tip_pos_w(3),
-        # path_axis_w(3), path_length(1), port_x/y/z_w(9), port_index(1).
-        self._command = torch.zeros((self.num_envs, 24), dtype=dtype, device=device)
+        # final_tip_pos_w(3), target_tip_quat_w(4), randomized approach
+        # pos/quat(7), nominal approach pos(3), path_axis_w(3),
+        # path_length(1), port_x/y/z_w(9), port_index(1).
+        self._command = torch.zeros((self.num_envs, 31), dtype=dtype, device=device)
 
     def __str__(self) -> str:
         return (
@@ -68,6 +75,9 @@ class InsertionGoalCommand(CommandTerm):
             f"\tPort: {self.cfg.port_name}\n"
             f"\tTarget X/Z offset: {self.cfg.target_xz_offset}\n"
             f"\tApproach offset: {self.cfg.approach_offset_local}\n"
+            f"\tApproach position noise: {self.cfg.approach_pos_noise_local}\n"
+            f"\tApproach tilt/twist noise deg: "
+            f"{self.cfg.approach_tilt_noise_deg}/{self.cfg.approach_twist_noise_deg}\n"
             f"\tResampling time range: {self.cfg.resampling_time_range}"
         )
 
@@ -85,8 +95,10 @@ class InsertionGoalCommand(CommandTerm):
             return
 
         final_positions = []
+        nominal_approach_positions = []
         approach_positions = []
         port_quats = []
+        approach_quats = []
         port_x_axes = []
         port_y_axes = []
         port_z_axes = []
@@ -113,16 +125,38 @@ class InsertionGoalCommand(CommandTerm):
                 + float(self.cfg.target_xz_offset[0]) * port_x
                 + float(self.cfg.target_xz_offset[1]) * port_z
             )
-            approach_pos = (
+            nominal_approach_pos = (
                 final_pos
                 + float(self.cfg.approach_offset_local[0]) * port_x
                 + float(self.cfg.approach_offset_local[1]) * port_y
                 + float(self.cfg.approach_offset_local[2]) * port_z
             )
+            approach_noise = _sample_local_position_noise(
+                self.cfg.approach_pos_noise_local,
+                dtype=torch.float64,
+            )
+            approach_pos = (
+                nominal_approach_pos
+                + approach_noise[0] * port_x
+                + approach_noise[1] * port_y
+                + approach_noise[2] * port_z
+            )
+
+            target_tip_quat_root = math_utils.quat_mul(port_quat, _target_orientation_offset(port_quat))[0]
+            approach_quat_root = math_utils.quat_mul(
+                target_tip_quat_root.unsqueeze(0),
+                _sample_approach_orientation_noise(
+                    self.cfg.approach_tilt_noise_deg,
+                    self.cfg.approach_twist_noise_deg,
+                    dtype=torch.float64,
+                ),
+            )[0]
 
             final_positions.append(final_pos.tolist())
+            nominal_approach_positions.append(nominal_approach_pos.tolist())
             approach_positions.append(approach_pos.tolist())
             port_quats.append(tuple(float(value) for value in port_quat_root))
+            approach_quats.append(tuple(float(value) for value in approach_quat_root.tolist()))
             port_x_axes.append(port_x.tolist())
             port_y_axes.append(port_y.tolist())
             port_z_axes.append(port_z.tolist())
@@ -131,11 +165,19 @@ class InsertionGoalCommand(CommandTerm):
         self.final_tip_pos_root[env_ids_t] = torch.tensor(
             final_positions, dtype=self.final_tip_pos_root.dtype, device=self.final_tip_pos_root.device
         )
+        self.nominal_approach_tip_pos_root[env_ids_t] = torch.tensor(
+            nominal_approach_positions,
+            dtype=self.nominal_approach_tip_pos_root.dtype,
+            device=self.nominal_approach_tip_pos_root.device,
+        )
         self.approach_tip_pos_root[env_ids_t] = torch.tensor(
             approach_positions, dtype=self.approach_tip_pos_root.dtype, device=self.approach_tip_pos_root.device
         )
         self.port_quat_root[env_ids_t] = torch.tensor(
             port_quats, dtype=self.port_quat_root.dtype, device=self.port_quat_root.device
+        )
+        self.approach_tip_quat_root[env_ids_t] = torch.tensor(
+            approach_quats, dtype=self.approach_tip_quat_root.dtype, device=self.approach_tip_quat_root.device
         )
         self.port_x_root[env_ids_t] = torch.tensor(
             port_x_axes, dtype=self.port_x_root.dtype, device=self.port_x_root.device
@@ -153,9 +195,13 @@ class InsertionGoalCommand(CommandTerm):
         card_quat = self.target.data.root_quat_w
 
         self.final_tip_pos_w[:] = _root_point_to_world(card_pos, card_quat, self.final_tip_pos_root)
+        self.nominal_approach_tip_pos_w[:] = _root_point_to_world(
+            card_pos, card_quat, self.nominal_approach_tip_pos_root
+        )
         self.approach_tip_pos_w[:] = _root_point_to_world(card_pos, card_quat, self.approach_tip_pos_root)
         port_quat_w = math_utils.quat_mul(card_quat, self.port_quat_root)
         self.target_tip_quat_w[:] = math_utils.quat_mul(port_quat_w, _target_orientation_offset(port_quat_w))
+        self.approach_tip_quat_w[:] = math_utils.quat_mul(card_quat, self.approach_tip_quat_root)
 
         self.port_x_w[:] = _normalize_rows(math_utils.quat_apply(card_quat, self.port_x_root))
         self.port_y_w[:] = _normalize_rows(math_utils.quat_apply(card_quat, self.port_y_root))
@@ -164,19 +210,21 @@ class InsertionGoalCommand(CommandTerm):
         self.target_y_w[:] = _local_axis_w(self.target_tip_quat_w, (0.0, 1.0, 0.0))
         self.target_z_w[:] = _local_axis_w(self.target_tip_quat_w, (0.0, 0.0, 1.0))
 
-        self.path_w[:] = self.final_tip_pos_w - self.approach_tip_pos_w
+        self.path_w[:] = self.final_tip_pos_w - self.nominal_approach_tip_pos_w
         self.path_length[:] = torch.linalg.norm(self.path_w, dim=1, keepdim=True).clamp_min(1.0e-9)
         self.path_axis_w[:] = self.path_w / self.path_length
 
         self._command[:, 0:3] = self.final_tip_pos_w
         self._command[:, 3:7] = self.target_tip_quat_w
         self._command[:, 7:10] = self.approach_tip_pos_w
-        self._command[:, 10:13] = self.path_axis_w
-        self._command[:, 13:14] = self.path_length
-        self._command[:, 14:17] = self.port_x_w
-        self._command[:, 17:20] = self.port_y_w
-        self._command[:, 20:23] = self.port_z_w
-        self._command[:, 23] = float(self.cfg.port_index)
+        self._command[:, 10:14] = self.approach_tip_quat_w
+        self._command[:, 14:17] = self.nominal_approach_tip_pos_w
+        self._command[:, 17:20] = self.path_axis_w
+        self._command[:, 20:21] = self.path_length
+        self._command[:, 21:24] = self.port_x_w
+        self._command[:, 24:27] = self.port_y_w
+        self._command[:, 27:30] = self.port_z_w
+        self._command[:, 30] = float(self.cfg.port_index)
 
 
 @configclass
@@ -191,6 +239,43 @@ class InsertionGoalCommandCfg(CommandTermCfg):
     port_index: int = 0
     target_xz_offset: tuple[float, float] = (0.0, 0.001)
     approach_offset_local: tuple[float, float, float] = (0.0, -0.09, 0.0)
+    approach_pos_noise_local: tuple[float, float, float] = (0.01, 0.0, 0.01)
+    approach_tilt_noise_deg: float = 2.0
+    approach_twist_noise_deg: float = 5.0
+
+
+def _sample_local_position_noise(max_abs_local: tuple[float, float, float], *, dtype: torch.dtype) -> torch.Tensor:
+    """Sample one local position offset whose norm never exceeds the largest configured bound."""
+    bounds = torch.tensor(max_abs_local, dtype=dtype)
+    noise = (2.0 * torch.rand(3, dtype=dtype) - 1.0) * torch.abs(bounds)
+    max_norm = torch.max(torch.abs(bounds))
+    norm = torch.linalg.norm(noise)
+    if float(max_norm) > 0.0 and float(norm) > float(max_norm):
+        noise = noise * (max_norm / norm)
+    return noise
+
+
+def _sample_approach_orientation_noise(
+    tilt_noise_deg: float,
+    twist_noise_deg: float,
+    *,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Sample a small local tip-frame orientation offset in Isaac's wxyz order."""
+    tilt_max = math.radians(max(0.0, float(tilt_noise_deg)))
+    twist_max = math.radians(max(0.0, float(twist_noise_deg)))
+    tilt = (2.0 * torch.rand(2, dtype=dtype) - 1.0) * tilt_max
+    tilt_norm = torch.linalg.norm(tilt)
+    if tilt_max > 0.0 and float(tilt_norm) > tilt_max:
+        tilt = tilt * (tilt_max / tilt_norm)
+    twist = (2.0 * torch.rand(1, dtype=dtype) - 1.0) * twist_max
+    # Local X/Z are treated as tilt axes.  Local Y is treated as insertion-axis twist.
+    quat = math_utils.quat_from_euler_xyz(
+        tilt[0:1],
+        twist,
+        tilt[1:2],
+    )
+    return quat
 
 
 def _as_env_id_list(env_ids: Sequence[int], num_envs: int) -> list[int]:

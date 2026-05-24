@@ -55,6 +55,9 @@ class PortInsertionCommandsCfg(CommandsCfg):
         port_index=0,
         target_xz_offset=(0.0, 0.001),
         approach_offset_local=(0.0, -0.09, 0.0),
+        approach_pos_noise_local=(0.01, 0.0, 0.01),
+        approach_tilt_noise_deg=2.0,
+        approach_twist_noise_deg=5.0,
     )
 
 

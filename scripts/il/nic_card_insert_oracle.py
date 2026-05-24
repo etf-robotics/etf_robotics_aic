@@ -11,6 +11,24 @@ parser.add_argument("--task", type=str, default="AIC-Port-Insertion-v0")
 parser.add_argument("--num_envs", type=int, default=1)
 parser.add_argument("--step_hz", type=int, default=30)
 parser.add_argument("--max_episode_steps", type=int, default=1200)
+parser.add_argument(
+    "--assume_port_visible",
+    action=argparse.BooleanOptionalAction,
+    default=True,
+    help="Start the approach plan immediately. Later this can be driven by camera keypoint visibility.",
+)
+parser.add_argument("--approach_nominal_speed", type=float, default=0.08, help="Quintic approach duration speed in m/s.")
+parser.add_argument(
+    "--approach_end_speed",
+    type=float,
+    default=0.005,
+    help="Desired approach endpoint velocity along the nominal insertion axis in m/s.",
+)
+parser.add_argument("--approach_min_duration", type=float, default=1.0, help="Minimum quintic approach duration in seconds.")
+parser.add_argument("--approach_max_duration", type=float, default=5.0, help="Maximum quintic approach duration in seconds.")
+parser.add_argument("--approach_rot_speed_deg", type=float, default=30.0, help="Delayed approach rotation speed in deg/s.")
+parser.add_argument("--approach_rot_min_duration", type=float, default=0.5, help="Minimum nonzero approach rotation duration.")
+parser.add_argument("--approach_rot_margin", type=float, default=0.25, help="Seconds before approach end for rotation to finish.")
 parser.add_argument("--approach_threshold", type=float, default=0.015)
 parser.add_argument(
     "--insert_lateral_threshold",
@@ -157,6 +175,14 @@ def main() -> None:
         raise ValueError(f"--max_episode_steps must be positive, got {args_cli.max_episode_steps}.")
     if args_cli.step_hz <= 0:
         raise ValueError(f"--step_hz must be positive, got {args_cli.step_hz}.")
+    if args_cli.approach_nominal_speed <= 0.0:
+        raise ValueError(f"--approach_nominal_speed must be positive, got {args_cli.approach_nominal_speed}.")
+    if args_cli.approach_min_duration <= 0.0:
+        raise ValueError(f"--approach_min_duration must be positive, got {args_cli.approach_min_duration}.")
+    if args_cli.approach_max_duration < args_cli.approach_min_duration:
+        raise ValueError("--approach_max_duration must be >= --approach_min_duration.")
+    if args_cli.approach_rot_speed_deg <= 0.0:
+        raise ValueError(f"--approach_rot_speed_deg must be positive, got {args_cli.approach_rot_speed_deg}.")
 
     env_cfg = parse_env_cfg(
         args_cli.task,
@@ -192,14 +218,38 @@ def main() -> None:
         print(f"[INFO] start_joint_pos: {tuple(args_cli.start_joint_pos)}")
     print(f"[INFO] selected port: {goal.cfg.port_name}_link")
     print("[INFO] target mapping: command sfp_tip_link pose -> selected sfp_port_N_link pose")
+    print(f"[INFO] assume_port_visible: {args_cli.assume_port_visible}")
+    print(
+        "[INFO] quintic approach: "
+        f"nominal_speed={args_cli.approach_nominal_speed:.4f} m/s, "
+        f"end_speed={args_cli.approach_end_speed:.4f} m/s, "
+        f"duration=[{args_cli.approach_min_duration:.2f}, {args_cli.approach_max_duration:.2f}] s"
+    )
+    print(
+        "[INFO] delayed approach rotation: "
+        f"speed={args_cli.approach_rot_speed_deg:.2f} deg/s, "
+        f"min_duration={args_cli.approach_rot_min_duration:.2f} s, "
+        f"finish_margin={args_cli.approach_rot_margin:.2f} s"
+    )
     print(
         "[INFO] insert orientation gate: "
         f"{args_cli.insert_orientation_threshold_deg:.2f} deg, "
         f"lookahead={args_cli.insert_lookahead:.4f} m"
     )
     print(f"[INFO] approach_offset in selected port frame: {tuple(goal.cfg.approach_offset_local)}")
+    print(f"[INFO] approach_pos_noise_local: {tuple(goal.cfg.approach_pos_noise_local)}")
+    print(
+        "[INFO] approach orientation noise: "
+        f"tilt={goal.cfg.approach_tilt_noise_deg:.2f} deg, "
+        f"twist={goal.cfg.approach_twist_noise_deg:.2f} deg"
+    )
     print(f"[INFO] target_xz_offset in selected port X/Z plane: {tuple(goal.cfg.target_xz_offset)}")
+    print(
+        f"[INFO] live nominal_approach_tip_target_w[0]: "
+        f"{world_targets.nominal_approach_tip_pos_w[0].detach().cpu().tolist()}"
+    )
     print(f"[INFO] live approach_tip_target_w[0]: {world_targets.approach_tip_pos_w[0].detach().cpu().tolist()}")
+    print(f"[INFO] live approach_tip_quat_w[0]: {world_targets.approach_tip_quat_w[0].detach().cpu().tolist()}")
     print(f"[INFO] live final_tip_target_w[0]: {world_targets.final_tip_pos_w[0].detach().cpu().tolist()}")
 
     point_logger = None
@@ -210,6 +260,9 @@ def main() -> None:
             output_path=args_cli.point_log_path,
             offsets={
                 "approach_offset": tuple(goal.cfg.approach_offset_local),
+                "approach_pos_noise_local": tuple(goal.cfg.approach_pos_noise_local),
+                "approach_tilt_noise_deg": goal.cfg.approach_tilt_noise_deg,
+                "approach_twist_noise_deg": goal.cfg.approach_twist_noise_deg,
                 "target_xz_offset": tuple(goal.cfg.target_xz_offset),
                 "port_index": goal.cfg.port_index,
             },
@@ -229,6 +282,14 @@ def main() -> None:
                     max_pos_delta=args_cli.max_pos_delta,
                     insert_max_pos_delta=args_cli.insert_max_pos_delta,
                     max_rot_delta=args_cli.max_rot_delta,
+                    port_visible=args_cli.assume_port_visible,
+                    approach_nominal_speed=args_cli.approach_nominal_speed,
+                    approach_end_speed=args_cli.approach_end_speed,
+                    approach_min_duration=args_cli.approach_min_duration,
+                    approach_max_duration=args_cli.approach_max_duration,
+                    approach_rot_speed=math.radians(args_cli.approach_rot_speed_deg),
+                    approach_rot_min_duration=args_cli.approach_rot_min_duration,
+                    approach_rot_margin=args_cli.approach_rot_margin,
                     approach_threshold=args_cli.approach_threshold,
                     insert_lateral_threshold=args_cli.insert_lateral_threshold,
                     insert_orientation_threshold=math.radians(args_cli.insert_orientation_threshold_deg),
@@ -336,6 +397,7 @@ class _PointPositionLogger:
         self.port_index = port_index
         self.robot = env.scene["robot"]
         self.nic_card = env.scene["nic_card"]
+        self.goal = env.command_manager.get_term("insertion_goal")
         self.tcp_id = _first_body_id(self.robot, "gripper_tcp")
         self.tip_id = _first_body_id(self.robot, "sfp_tip_link")
         self.port_local_positions = self._resolve_port_local_positions()
@@ -360,7 +422,7 @@ class _PointPositionLogger:
                 "port_points": list(_port_point_paths(self.port_index).keys()),
                 "tip_points": list(TIP_POINT_NAMES.keys()),
                 "tcp_point": "gripper_tcp",
-                "derived_points": ["target_tip"],
+                "derived_points": ["target_tip", "nominal_approach_tip", "randomized_approach_tip", "final_tip"],
             }
         )
 
@@ -375,6 +437,9 @@ class _PointPositionLogger:
                 "tcp_gripper": _tensor_list(self.robot.data.body_pos_w[self.env_index, self.tcp_id]),
                 "derived": {
                     "target_tip": _tensor_list(output.target_tip_pos_w[self.env_index]),
+                    "nominal_approach_tip": _tensor_list(self.goal.nominal_approach_tip_pos_w[self.env_index]),
+                    "randomized_approach_tip": _tensor_list(self.goal.approach_tip_pos_w[self.env_index]),
+                    "final_tip": _tensor_list(self.goal.final_tip_pos_w[self.env_index]),
                 },
                 "diagnostics": {
                     "tip_position_error": float(output.tip_position_error[self.env_index]),

@@ -63,25 +63,32 @@ or card.
 The command exposes:
 
 - final `sfp_tip_link` target position in world frame
-- approach `sfp_tip_link` target position in world frame
+- nominal approach `sfp_tip_link` position in world frame
+- randomized approach `sfp_tip_link` pose in world frame
 - target `sfp_tip_link` quaternion in world frame
 - insertion path vector, axis, and length
 - port X/Y/Z axes in world frame
-- compact 24-D command tensor for future observation/debug use
+- compact 31-D command tensor for future observation/debug use
 
-The 24-D tensor schema is currently:
+The 31-D tensor schema is currently:
 
 ```text
 0:3    final_tip_pos_w
 3:7    target_tip_quat_w
-7:10   approach_tip_pos_w
-10:13  path_axis_w
-13:14  path_length
-14:17  port_x_w
-17:20  port_y_w
-20:23  port_z_w
-23:24  port_index
+7:10   randomized approach_tip_pos_w
+10:14  randomized approach_tip_quat_w
+14:17  nominal_approach_tip_pos_w
+17:20  path_axis_w
+20:21  path_length
+21:24  port_x_w
+24:27  port_y_w
+27:30  port_z_w
+30:31  port_index
 ```
+
+The insertion path always uses the nominal approach point and final point.  The
+randomized approach pose is only a waypoint used by the oracle before it
+captures the nominal insertion line.
 
 The policy observation was intentionally not changed in this pass.  Since the
 task is fixed to port 0, the policy does not yet need a goal observation.  If
@@ -122,9 +129,37 @@ These are the important hardcoded values after the refactor.
 | Controlled body | `gripper_tcp` | oracle and DiffIK action config |
 | Target X/Z offset | `(0.0, 0.001)` m | `PortInsertionCommandsCfg` |
 | Approach offset | `(0.0, -0.09, 0.0)` m | `PortInsertionCommandsCfg` |
+| Approach position randomization | max `0.01` m local X/Z norm | `PortInsertionCommandsCfg` |
+| Approach orientation randomization | `2 deg` tilt, `5 deg` twist | `PortInsertionCommandsCfg` |
 | Orientation correction | local `R_x(+90 deg)` | `InsertionGoalCommand` and legacy oracle helper |
 | Command resampling range | `(1.0e9, 1.0e9 + 1.0)` seconds | `InsertionGoalCommandCfg` |
-| Compact command dim | `24` | `InsertionGoalCommand` |
+| Compact command dim | `31` | `InsertionGoalCommand` |
+
+## Oracle Motion Phases
+
+The demo oracle now uses a perception-style phase sequence:
+
+```text
+SEARCH_FOR_PORT -> PLAN_APPROACH -> APPROACH_P -> APPROACH_P_R -> INSERT -> HOLD
+```
+
+`SEARCH_FOR_PORT` reserves the future camera/keypoint visibility trigger.  The
+runner currently passes `--assume_port_visible` by default, so data collection
+can still start immediately.
+
+`PLAN_APPROACH` latches the live `sfp_tip_link` pose and creates a per-env
+quintic position trajectory to the randomized approach point.  The endpoint
+velocity points along the nominal insertion axis and the endpoint acceleration
+is zero.
+
+`APPROACH_P` follows only the quintic position and holds the start orientation.
+`APPROACH_P_R` continues the same position polynomial while slerping from the
+start orientation to the randomized approach orientation.  Rotation is scheduled
+from the required angular distance, speed, and finish margin.
+
+`INSERT` ignores the randomized approach pose for descent.  It projects the tip
+onto the nominal insertion line and only advances insertion depth when lateral
+error and final-orientation error are inside the configured gates.
 
 ### Terminations
 
@@ -169,6 +204,14 @@ These are script control/debug defaults, not task-goal definitions:
 | `--max_pos_delta` | `0.020` m |
 | `--insert_max_pos_delta` | `0.02` m |
 | `--max_rot_delta` | `2.5` |
+| `--assume_port_visible` | `True` |
+| `--approach_nominal_speed` | `0.08` m/s |
+| `--approach_end_speed` | `0.005` m/s |
+| `--approach_min_duration` | `1.0` s |
+| `--approach_max_duration` | `5.0` s |
+| `--approach_rot_speed_deg` | `30.0` deg/s |
+| `--approach_rot_min_duration` | `0.5` s |
+| `--approach_rot_margin` | `0.25` s |
 | `--log_every` | `5` steps |
 | point logging | disabled by default |
 | point-log env | `0` |
