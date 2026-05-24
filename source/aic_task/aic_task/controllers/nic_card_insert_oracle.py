@@ -349,6 +349,12 @@ def compute_simple_nic_insert_oracle(
     )
     tcp_position_error = torch.linalg.norm(desired_tcp_pos_w - tcp_pos_w, dim=1)
     tcp_orientation_error = math_utils.quat_error_magnitude(tcp_quat_w, desired_tcp_quat_w)
+    current_insert_mask = state.phase == int(SimpleNicInsertPhase.INSERT)
+    per_env_max_pos_delta = torch.where(
+        current_insert_mask.unsqueeze(1),
+        torch.full_like(path_distance, insert_max_pos_delta),
+        torch.full_like(path_distance, max_pos_delta),
+    )
     processed_action = _relative_ik_processed_action(
         robot,
         tcp_pos_w,
@@ -358,7 +364,7 @@ def compute_simple_nic_insert_oracle(
         action_scale,
         pos_gain=pos_gain,
         rot_gain=rot_gain,
-        max_pos_delta=insert_max_pos_delta if bool(insert_mask.any()) else max_pos_delta,
+        max_pos_delta=per_env_max_pos_delta,
         max_rot_delta=max_rot_delta,
     )
     raw_action = processed_action / torch.clamp(action_scale, min=1.0e-9)
@@ -442,7 +448,7 @@ def _relative_ik_processed_action(
     *,
     pos_gain: float,
     rot_gain: float,
-    max_pos_delta: float,
+    max_pos_delta: float | torch.Tensor,
     max_rot_delta: float,
 ) -> torch.Tensor:
     tcp_pos_b, tcp_quat_b = math_utils.subtract_frame_transforms(
@@ -635,7 +641,12 @@ def _nearby_child_paths(stage, asset_root_path: str, *, max_count: int = 24) -> 
     return paths
 
 
-def _clamp_vector_norm(vector: torch.Tensor, max_norm: float) -> torch.Tensor:
+def _clamp_vector_norm(vector: torch.Tensor, max_norm: float | torch.Tensor) -> torch.Tensor:
+    if not torch.is_tensor(max_norm):
+        max_norm = torch.tensor(max_norm, dtype=vector.dtype, device=vector.device)
+    max_norm = max_norm.to(dtype=vector.dtype, device=vector.device)
+    if max_norm.ndim == 0:
+        max_norm = max_norm.reshape(1, 1)
     norm = torch.linalg.norm(vector, dim=1, keepdim=True)
     scale = torch.clamp(max_norm / torch.clamp(norm, min=1.0e-9), max=1.0)
     return vector * scale

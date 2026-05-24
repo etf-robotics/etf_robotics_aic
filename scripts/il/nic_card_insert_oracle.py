@@ -265,12 +265,14 @@ def main() -> None:
                     insert_speed=args_cli.insert_speed,
                     step_dt=_env_step_dt(env),
                 )
-                phase = oracle.SimpleNicInsertPhase(int(output.phase[0])).name
                 if point_logger is not None:
-                    point_logger.write_step(step, phase, output)
+                    logged_phase = oracle.SimpleNicInsertPhase(int(output.phase[point_logger.env_index])).name
+                    point_logger.write_step(step, logged_phase, output)
                 env.step(output.raw_action)
 
                 if args_cli.log_every > 0 and step % args_cli.log_every == 0:
+                    phase0 = oracle.SimpleNicInsertPhase(int(output.phase[0])).name
+                    phase_summary = _phase_summary(oracle, output.phase)
                     path_xy_msg = ""
                     if args_cli.log_path_xy_error:
                         xy_delta = output.tip_pos_w[0, :2] - output.target_tip_pos_w[0, :2]
@@ -291,7 +293,7 @@ def main() -> None:
                             f" cmd_rot_b={float(torch.linalg.norm(output.processed_action[0, 3:6])):.4f}"
                         )
                     print(
-                        f"[INFO] step={step:04d} phase={phase} "
+                        f"[INFO] step={step:04d} env0_phase={phase0} phases={phase_summary} "
                         f"tip_err={float(output.tip_position_error[0]):.4f} m "
                         f"ori_err={math.degrees(float(output.orientation_error[0])):.2f} deg "
                         f"insert={float(output.insert_fraction[0]) * 100.0:5.1f}% "
@@ -300,11 +302,11 @@ def main() -> None:
                     )
 
                 hold_done = (
-                    int(state.phase[0]) == int(oracle.SimpleNicInsertPhase.HOLD)
-                    and int(state.hold_steps[0]) >= args_cli.hold_steps
+                    (state.phase == int(oracle.SimpleNicInsertPhase.HOLD))
+                    & (state.hold_steps >= args_cli.hold_steps)
                 )
-                if hold_done:
-                    print(f"[INFO] Hold complete after {step + 1} steps.")
+                if bool(torch.all(hold_done)):
+                    print(f"[INFO] Hold complete for all {env.num_envs} envs after {step + 1} steps.")
                     break
 
                 if env.sim.is_stopped():
@@ -322,6 +324,14 @@ def _env_step_dt(env: gym.Env) -> float:
     if step_dt is not None and float(step_dt) > 0.0:
         return float(step_dt)
     return 1.0 / max(1, args_cli.step_hz)
+
+
+def _phase_summary(oracle, phases: torch.Tensor) -> str:
+    counts = []
+    for phase in oracle.SimpleNicInsertPhase:
+        count = int(torch.count_nonzero(phases == int(phase)).item())
+        counts.append(f"{phase.name}={count}")
+    return "[" + ", ".join(counts) + "]"
 
 
 class _PointPositionLogger:

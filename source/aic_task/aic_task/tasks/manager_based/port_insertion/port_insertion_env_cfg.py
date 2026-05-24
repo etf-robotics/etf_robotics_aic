@@ -87,7 +87,15 @@ class PortInsertionTerminationsCfg(TerminationsCfg):
 class PortInsertionEnvCfg(AICTaskEnvCfg):
     """AIC V1 insertion env for scripted data generation and later RL."""
 
-    scene: PortInsertionSceneCfg = PortInsertionSceneCfg(num_envs=1, env_spacing=4.0)
+    # The robot USD contains a PhysX collision group under the rope/cable.
+    # Keep full per-env cloning, but do not add IsaacLab inter-env collision
+    # groups on top of the cable's own collision setup.
+    scene: PortInsertionSceneCfg = PortInsertionSceneCfg(
+        num_envs=1,
+        env_spacing=4.0,
+        replicate_physics=False,
+        filter_collisions=False,
+    )
     observations: PortInsertionObservationsCfg = PortInsertionObservationsCfg()
     rewards: PortInsertionRewardsCfg = PortInsertionRewardsCfg()
     terminations: PortInsertionTerminationsCfg = PortInsertionTerminationsCfg()
