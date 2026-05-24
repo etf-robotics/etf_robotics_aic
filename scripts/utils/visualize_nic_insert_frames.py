@@ -87,10 +87,7 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 
 import contextlib
-import importlib.util
 import math
-from pathlib import Path
-import sys
 import time
 
 import gymnasium as gym
@@ -103,6 +100,7 @@ import isaaclab.utils.math as math_utils
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
+import aic_task.controllers.nic_card_insert_oracle as nic_card_insert_oracle
 import aic_task.tasks  # noqa: F401
 
 from aic_task.geometry.runtime import _candidate_prim_paths, _resolve_prim, resolve_asset_root_prim_path
@@ -119,9 +117,6 @@ ROBOT_BODY_NAMES = {
     "robot.gripper_tcp": "gripper_tcp",
     "robot.sfp_tip_link": "sfp_tip_link",
 }
-
-_ORACLE = None
-
 
 class RateLimiter:
     """Enforce a target loop rate by polling and rendering."""
@@ -419,19 +414,7 @@ def main() -> None:
 
 
 def _oracle_module():
-    global _ORACLE
-    if _ORACLE is not None:
-        return _ORACLE
-    repo_root = Path(__file__).resolve().parents[2]
-    module_path = repo_root / "source/aic_task/aic_task/controllers/nic_card_insert_oracle.py"
-    spec = importlib.util.spec_from_file_location("_simple_nic_card_insert_oracle", module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Cannot load oracle module from {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    _ORACLE = module
-    return module
+    return nic_card_insert_oracle
 
 
 def _single_env_targets(world_targets, env_index: int):

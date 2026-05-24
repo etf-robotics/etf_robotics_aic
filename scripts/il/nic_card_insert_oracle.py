@@ -119,11 +119,9 @@ simulation_app = app_launcher.app
 
 import contextlib
 from datetime import datetime
-import importlib.util
 import json
 import math
 from pathlib import Path
-import sys
 import time
 
 import gymnasium as gym
@@ -133,9 +131,8 @@ import isaaclab.utils.math as math_utils
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
+import aic_task.controllers.nic_card_insert_oracle as nic_card_insert_oracle
 import aic_task.tasks  # noqa: F401
-
-_ORACLE = None
 
 def _port_point_paths(port_index: int) -> dict[str, str]:
     port = f"sfp_port_{port_index}"
@@ -152,20 +149,8 @@ TIP_POINT_NAMES = {
 
 
 def _oracle_module():
-    """Load the new oracle without importing older controller package exports."""
-    global _ORACLE
-    if _ORACLE is not None:
-        return _ORACLE
-    repo_root = Path(__file__).resolve().parents[2]
-    module_path = repo_root / "source/aic_task/aic_task/controllers/nic_card_insert_oracle.py"
-    spec = importlib.util.spec_from_file_location("_simple_nic_card_insert_oracle", module_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Cannot load oracle module from {module_path}")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    _ORACLE = module
-    return module
+    """Return the active NIC insertion oracle module."""
+    return nic_card_insert_oracle
 
 
 class RateLimiter:
