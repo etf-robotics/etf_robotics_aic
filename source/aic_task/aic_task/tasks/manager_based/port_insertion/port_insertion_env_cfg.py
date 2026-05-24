@@ -11,13 +11,13 @@ stayed still for a short window.
 
 from __future__ import annotations
 
-import aic_task.mdp as mdp
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.utils import configclass
 
-from aic_task.envs.aic_task_env_cfg import (
+from . import mdp
+from .aic_task_env_cfg import (
     AICTaskEnvCfg,
     AICTaskSceneCfg,
     ObservationsCfg,
