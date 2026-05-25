@@ -140,7 +140,7 @@ These are the important hardcoded values after the refactor.
 The demo oracle now uses a perception-style phase sequence:
 
 ```text
-SEARCH_FOR_PORT -> PLAN_APPROACH -> APPROACH_P -> APPROACH_P_R -> INSERT -> HOLD
+SEARCH_FOR_PORT -> PLAN_APPROACH -> APPROACH_P -> APPROACH_P_R -> ALIGN -> INSERT -> HOLD
 ```
 
 `SEARCH_FOR_PORT` reserves the future camera/keypoint visibility trigger.  The
@@ -157,9 +157,13 @@ is zero.
 start orientation to the randomized approach orientation.  Rotation is scheduled
 from the required angular distance, speed, and finish margin.
 
-`INSERT` ignores the randomized approach pose for descent.  It projects the tip
-onto the nominal insertion line and only advances insertion depth when lateral
-error and final-orientation error are inside the configured gates.
+`ALIGN` ignores the randomized approach pose and corrects the tip back to the
+nominal insertion line and final insertion orientation.  It does not advance
+insertion depth.
+
+`INSERT` starts only after ALIGN is within its lateral and orientation gates. It
+then advances along the nominal insertion line when the insertion gates are
+still satisfied.
 
 ### Terminations
 
@@ -194,21 +198,26 @@ These are script control/debug defaults, not task-goal definitions:
 | `--step_hz` | `30` |
 | `--max_episode_steps` | `1200` |
 | `--approach_threshold` | `0.015` m |
-| `--insert_lateral_threshold` | `0.010` m |
-| `--insert_orientation_threshold_deg` | `4.0` deg |
-| `--insert_lookahead` | `0.002` m |
+| `--align_lateral_threshold` | `0.003` m |
+| `--align_orientation_threshold_deg` | `2.0` deg |
+| `--align_max_pos_delta` | `0.004` m |
+| `--align_max_rot_delta` | `0.05` rad |
+| `--insert_lateral_threshold` | `0.003` m |
+| `--insert_orientation_threshold_deg` | `2.0` deg |
+| `--insert_lookahead` | `0.001` m |
 | `--final_threshold` | `0.003` m |
 | `--insert_speed` | `0.010` m/s |
 | `--pos_gain` | `1.2` |
 | `--rot_gain` | `0.2` |
 | `--max_pos_delta` | `0.020` m |
-| `--insert_max_pos_delta` | `0.02` m |
+| `--insert_max_pos_delta` | `0.005` m |
+| `--insert_max_rot_delta` | `0.03` rad |
 | `--max_rot_delta` | `2.5` |
 | `--assume_port_visible` | `True` |
-| `--approach_nominal_speed` | `0.08` m/s |
+| `--approach_nominal_speed` | `0.035` m/s |
 | `--approach_end_speed` | `0.005` m/s |
-| `--approach_min_duration` | `1.0` s |
-| `--approach_max_duration` | `5.0` s |
+| `--approach_min_duration` | `2.0` s |
+| `--approach_max_duration` | `8.0` s |
 | `--approach_rot_speed_deg` | `30.0` deg/s |
 | `--approach_rot_min_duration` | `0.5` s |
 | `--approach_rot_margin` | `0.25` s |

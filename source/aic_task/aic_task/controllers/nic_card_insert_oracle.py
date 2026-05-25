@@ -25,8 +25,9 @@ class SimpleNicInsertPhase(IntEnum):
     PLAN_APPROACH = 1
     APPROACH_P = 2
     APPROACH_P_R = 3
-    INSERT = 4
-    HOLD = 5
+    ALIGN = 4
+    INSERT = 5
+    HOLD = 6
 
 
 @dataclass
@@ -400,20 +401,25 @@ def compute_simple_nic_insert_oracle(
     pos_gain: float = 1.2,
     rot_gain: float = 0.2,
     max_pos_delta: float = 0.020,
-    insert_max_pos_delta: float = 0.002,
+    insert_max_pos_delta: float = 0.005,
     max_rot_delta: float = 0.025,
     port_visible: bool | torch.Tensor = True,
-    approach_nominal_speed: float = 0.08,
+    approach_nominal_speed: float = 0.035,
     approach_end_speed: float = 0.005,
-    approach_min_duration: float = 1.0,
-    approach_max_duration: float = 5.0,
+    approach_min_duration: float = 2.0,
+    approach_max_duration: float = 8.0,
     approach_rot_speed: float = math.radians(30.0),
     approach_rot_min_duration: float = 0.5,
     approach_rot_margin: float = 0.25,
     approach_threshold: float = 0.015,
-    insert_lateral_threshold: float = 0.010,
-    insert_orientation_threshold: float = math.radians(4.0),
-    insert_lookahead: float = 0.002,
+    align_lateral_threshold: float = 0.003,
+    align_orientation_threshold: float = math.radians(2.0),
+    align_max_pos_delta: float = 0.004,
+    align_max_rot_delta: float = 0.05,
+    insert_lateral_threshold: float = 0.003,
+    insert_orientation_threshold: float = math.radians(2.0),
+    insert_lookahead: float = 0.001,
+    insert_max_rot_delta: float = 0.03,
     final_threshold: float = 0.003,
     insert_speed: float = 0.010,
     step_dt: float = 1.0 / 30.0,
@@ -494,11 +500,22 @@ def compute_simple_nic_insert_oracle(
         & (tip_position_error <= approach_threshold)
         & (orientation_error <= insert_orientation_threshold)
     )
-    state.phase[finished_approach_path] = int(SimpleNicInsertPhase.INSERT)
+    state.phase[finished_approach_path] = int(SimpleNicInsertPhase.ALIGN)
+
+    align_mask = state.phase == int(SimpleNicInsertPhase.ALIGN)
+    state.insert_distance[align_mask] = path_distance[align_mask]
+    align_ready = (
+        align_mask
+        & (path_lateral_error <= align_lateral_threshold)
+        & (final_orientation_error <= align_orientation_threshold)
+    )
+    state.phase[align_ready] = int(SimpleNicInsertPhase.INSERT)
 
     insert_mask = state.phase == int(SimpleNicInsertPhase.INSERT)
+    just_entered_insert = align_ready
     advance_mask = (
         insert_mask
+        & ~just_entered_insert
         & (path_lateral_error <= insert_lateral_threshold)
         & (final_orientation_error <= insert_orientation_threshold)
     )
@@ -549,11 +566,29 @@ def compute_simple_nic_insert_oracle(
     )
     tcp_position_error = torch.linalg.norm(desired_tcp_pos_w - tcp_pos_w, dim=1)
     tcp_orientation_error = math_utils.quat_error_magnitude(tcp_quat_w, desired_tcp_quat_w)
+    current_align_mask = state.phase == int(SimpleNicInsertPhase.ALIGN)
     current_insert_mask = state.phase == int(SimpleNicInsertPhase.INSERT)
+    default_pos_delta = torch.full_like(path_distance, max_pos_delta)
+    per_env_max_pos_delta = torch.where(
+        current_align_mask.unsqueeze(1),
+        torch.full_like(path_distance, align_max_pos_delta),
+        default_pos_delta,
+    )
     per_env_max_pos_delta = torch.where(
         current_insert_mask.unsqueeze(1),
         torch.full_like(path_distance, insert_max_pos_delta),
-        torch.full_like(path_distance, max_pos_delta),
+        per_env_max_pos_delta,
+    )
+    default_rot_delta = torch.full_like(path_distance, max_rot_delta)
+    per_env_max_rot_delta = torch.where(
+        current_align_mask.unsqueeze(1),
+        torch.full_like(path_distance, align_max_rot_delta),
+        default_rot_delta,
+    )
+    per_env_max_rot_delta = torch.where(
+        current_insert_mask.unsqueeze(1),
+        torch.full_like(path_distance, insert_max_rot_delta),
+        per_env_max_rot_delta,
     )
     processed_action = _relative_ik_processed_action(
         robot,
@@ -565,7 +600,7 @@ def compute_simple_nic_insert_oracle(
         pos_gain=pos_gain,
         rot_gain=rot_gain,
         max_pos_delta=per_env_max_pos_delta,
-        max_rot_delta=max_rot_delta,
+        max_rot_delta=per_env_max_rot_delta,
     )
     raw_action = processed_action / torch.clamp(action_scale, min=1.0e-9)
     state.prev_tip_pos_w[:] = tip_pos_w
@@ -700,6 +735,11 @@ def _current_target_tip_pose(
         _smooth5(rot_progress),
     )
     target_quat_w = torch.where(rotation_mask, approach_quat, target_quat_w)
+
+    align_mask = (state.phase == int(SimpleNicInsertPhase.ALIGN)).unsqueeze(1)
+    align_target_w = world_targets.nominal_approach_tip_pos_w + world_targets.path_w * insert_fraction
+    target_pos_w = torch.where(align_mask, align_target_w, target_pos_w)
+    target_quat_w = torch.where(align_mask, world_targets.target_tip_quat_w, target_quat_w)
 
     hold_mask = (state.phase == int(SimpleNicInsertPhase.HOLD)).unsqueeze(1)
     target_pos_w = torch.where(hold_mask, world_targets.final_tip_pos_w, target_pos_w)

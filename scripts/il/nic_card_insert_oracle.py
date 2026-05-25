@@ -31,15 +31,29 @@ parser.add_argument("--approach_rot_min_duration", type=float, default=0.5, help
 parser.add_argument("--approach_rot_margin", type=float, default=0.25, help="Seconds before approach end for rotation to finish.")
 parser.add_argument("--approach_threshold", type=float, default=0.015)
 parser.add_argument(
+    "--align_lateral_threshold",
+    type=float,
+    default=0.003,
+    help="Max perpendicular error to the nominal insertion line before ALIGN can enter INSERT, meters.",
+)
+parser.add_argument(
+    "--align_orientation_threshold_deg",
+    type=float,
+    default=2.0,
+    help="Max final-orientation error before ALIGN can enter INSERT, degrees.",
+)
+parser.add_argument("--align_max_pos_delta", type=float, default=0.004, help="Max ALIGN position command delta in meters.")
+parser.add_argument("--align_max_rot_delta", type=float, default=0.05, help="Max ALIGN rotation command delta in radians.")
+parser.add_argument(
     "--insert_lateral_threshold",
     type=float,
-    default=0.010,
+    default=0.003,
     help="Max perpendicular error to the insertion line before insertion depth is allowed to advance, meters.",
 )
 parser.add_argument(
     "--insert_orientation_threshold_deg",
     type=float,
-    default=1.0,
+    default=2.0,
     help="Max tip orientation error before insertion depth is allowed to advance, degrees.",
 )
 parser.add_argument(
@@ -54,6 +68,7 @@ parser.add_argument("--pos_gain", type=float, default=1.2)
 parser.add_argument("--rot_gain", type=float, default=0.2)
 parser.add_argument("--max_pos_delta", type=float, default=0.020)
 parser.add_argument("--insert_max_pos_delta", type=float, default=0.005)
+parser.add_argument("--insert_max_rot_delta", type=float, default=0.03)
 parser.add_argument("--max_rot_delta", type=float, default=2.5)
 parser.add_argument("--log_every", type=int, default=5, help="0 disables periodic logging.")
 parser.add_argument(
@@ -183,6 +198,18 @@ def main() -> None:
         raise ValueError("--approach_max_duration must be >= --approach_min_duration.")
     if args_cli.approach_rot_speed_deg <= 0.0:
         raise ValueError(f"--approach_rot_speed_deg must be positive, got {args_cli.approach_rot_speed_deg}.")
+    if args_cli.align_lateral_threshold < 0.0:
+        raise ValueError(f"--align_lateral_threshold must be non-negative, got {args_cli.align_lateral_threshold}.")
+    if args_cli.align_orientation_threshold_deg < 0.0:
+        raise ValueError(
+            f"--align_orientation_threshold_deg must be non-negative, got {args_cli.align_orientation_threshold_deg}."
+        )
+    if args_cli.align_max_pos_delta <= 0.0:
+        raise ValueError(f"--align_max_pos_delta must be positive, got {args_cli.align_max_pos_delta}.")
+    if args_cli.align_max_rot_delta <= 0.0:
+        raise ValueError(f"--align_max_rot_delta must be positive, got {args_cli.align_max_rot_delta}.")
+    if args_cli.insert_max_rot_delta <= 0.0:
+        raise ValueError(f"--insert_max_rot_delta must be positive, got {args_cli.insert_max_rot_delta}.")
 
     env_cfg = parse_env_cfg(
         args_cli.task,
@@ -232,9 +259,22 @@ def main() -> None:
         f"finish_margin={args_cli.approach_rot_margin:.2f} s"
     )
     print(
-        "[INFO] insert orientation gate: "
-        f"{args_cli.insert_orientation_threshold_deg:.2f} deg, "
+        "[INFO] insert advance gate: "
+        f"lateral={args_cli.insert_lateral_threshold:.4f} m, "
+        f"orientation={args_cli.insert_orientation_threshold_deg:.2f} deg, "
         f"lookahead={args_cli.insert_lookahead:.4f} m"
+    )
+    print(
+        "[INFO] align gate: "
+        f"lateral={args_cli.align_lateral_threshold:.4f} m, "
+        f"orientation={args_cli.align_orientation_threshold_deg:.2f} deg, "
+        f"max_pos_delta={args_cli.align_max_pos_delta:.4f} m, "
+        f"max_rot_delta={args_cli.align_max_rot_delta:.4f} rad"
+    )
+    print(
+        "[INFO] insert limits: "
+        f"max_pos_delta={args_cli.insert_max_pos_delta:.4f} m, "
+        f"max_rot_delta={args_cli.insert_max_rot_delta:.4f} rad"
     )
     print(f"[INFO] approach_offset in selected port frame: {tuple(goal.cfg.approach_offset_local)}")
     print(f"[INFO] approach_pos_noise_local: {tuple(goal.cfg.approach_pos_noise_local)}")
@@ -291,9 +331,14 @@ def main() -> None:
                     approach_rot_min_duration=args_cli.approach_rot_min_duration,
                     approach_rot_margin=args_cli.approach_rot_margin,
                     approach_threshold=args_cli.approach_threshold,
+                    align_lateral_threshold=args_cli.align_lateral_threshold,
+                    align_orientation_threshold=math.radians(args_cli.align_orientation_threshold_deg),
+                    align_max_pos_delta=args_cli.align_max_pos_delta,
+                    align_max_rot_delta=args_cli.align_max_rot_delta,
                     insert_lateral_threshold=args_cli.insert_lateral_threshold,
                     insert_orientation_threshold=math.radians(args_cli.insert_orientation_threshold_deg),
                     insert_lookahead=args_cli.insert_lookahead,
+                    insert_max_rot_delta=args_cli.insert_max_rot_delta,
                     final_threshold=args_cli.final_threshold,
                     insert_speed=args_cli.insert_speed,
                     step_dt=_env_step_dt(env),
