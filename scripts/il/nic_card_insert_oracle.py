@@ -478,7 +478,8 @@ def main() -> None:
     rate_limiter = RateLimiter(args_cli.step_hz)
 
     env.sim.reset()
-    env.reset()
+    # Keep policy observations available for future use, including obs_dict["policy"]["wrist_wrench"].
+    obs_dict, _ = env.reset()
     if not args_cli.disable_start_joint_reset:
         _apply_start_joint_pose(env, tuple(args_cli.start_joint_pos))
         _settle_start_pose(env, rate_limiter, args_cli.start_settle_steps)
@@ -545,7 +546,8 @@ def main() -> None:
                 if point_logger is not None:
                     logged_phase = oracle.SimpleNicInsertPhase(int(output.phase[point_logger.env_index])).name
                     point_logger.write_step(step, logged_phase, output)
-                _, _, terminated, time_outs, _ = env.step(output.raw_action)
+                # Refresh policy observations even though the current oracle is still state-based.
+                obs_dict, _, terminated, time_outs, _ = env.step(output.raw_action)
                 reset_mask = terminated | time_outs
                 if bool(torch.any(reset_mask)):
                     reset_env_ids = reset_mask.nonzero(as_tuple=False).squeeze(-1)
