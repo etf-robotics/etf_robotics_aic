@@ -17,15 +17,15 @@ parser.add_argument(
     default=True,
     help="Start the approach plan immediately. Later this can be driven by camera keypoint visibility.",
 )
-parser.add_argument("--approach_nominal_speed", type=float, default=0.08, help="Quintic approach duration speed in m/s.")
+parser.add_argument("--approach_nominal_speed", type=float, default=0.035, help="Quintic approach duration speed in m/s.")
 parser.add_argument(
     "--approach_end_speed",
     type=float,
     default=0.005,
     help="Desired approach endpoint velocity along the nominal insertion axis in m/s.",
 )
-parser.add_argument("--approach_min_duration", type=float, default=1.0, help="Minimum quintic approach duration in seconds.")
-parser.add_argument("--approach_max_duration", type=float, default=5.0, help="Maximum quintic approach duration in seconds.")
+parser.add_argument("--approach_min_duration", type=float, default=2.0, help="Minimum quintic approach duration in seconds.")
+parser.add_argument("--approach_max_duration", type=float, default=8.0, help="Maximum quintic approach duration in seconds.")
 parser.add_argument("--approach_rot_speed_deg", type=float, default=30.0, help="Delayed approach rotation speed in deg/s.")
 parser.add_argument("--approach_rot_min_duration", type=float, default=0.5, help="Minimum nonzero approach rotation duration.")
 parser.add_argument("--approach_rot_margin", type=float, default=0.25, help="Seconds before approach end for rotation to finish.")
@@ -39,13 +39,13 @@ parser.add_argument(
 parser.add_argument(
     "--insert_orientation_threshold_deg",
     type=float,
-    default=4.0,
+    default=1.0,
     help="Max tip orientation error before insertion depth is allowed to advance, degrees.",
 )
 parser.add_argument(
     "--insert_lookahead",
     type=float,
-    default=0.002,
+    default=0.001,
     help="Minimum forward lookahead in meters while INSERT is aligned.",
 )
 parser.add_argument("--final_threshold", type=float, default=0.003)
@@ -53,7 +53,7 @@ parser.add_argument("--insert_speed", type=float, default=0.010, help="Target in
 parser.add_argument("--pos_gain", type=float, default=1.2)
 parser.add_argument("--rot_gain", type=float, default=0.2)
 parser.add_argument("--max_pos_delta", type=float, default=0.020)
-parser.add_argument("--insert_max_pos_delta", type=float, default=0.02)
+parser.add_argument("--insert_max_pos_delta", type=float, default=0.005)
 parser.add_argument("--max_rot_delta", type=float, default=2.5)
 parser.add_argument("--log_every", type=int, default=5, help="0 disables periodic logging.")
 parser.add_argument(
