@@ -3,123 +3,256 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+from pathlib import Path
+
+import yaml
 
 from isaaclab.app import AppLauncher
 
+DEFAULT_ORACLE_CONFIG_PATH = Path(__file__).resolve().parent / "config" / "oracle.yaml"
+
+
+def _load_oracle_yaml(path: str | Path) -> dict:
+    """Load YAML defaults for this launcher."""
+    config_path = Path(path).expanduser()
+    if not config_path.is_file():
+        raise FileNotFoundError(f"Oracle config file does not exist: {config_path}")
+    with config_path.open("r", encoding="utf-8") as file:
+        config = yaml.safe_load(file) or {}
+    if not isinstance(config, dict):
+        raise ValueError(f"Oracle config must contain a YAML mapping: {config_path}")
+    return config
+
+
+def _cfg(config: dict, key_path: str, fallback):
+    node = config
+    for key in key_path.split("."):
+        if not isinstance(node, dict) or key not in node:
+            return fallback
+        node = node[key]
+    return node
+
+
+_config_parser = argparse.ArgumentParser(add_help=False)
+_config_parser.add_argument("--oracle_config", type=str, default=str(DEFAULT_ORACLE_CONFIG_PATH))
+_config_args, _ = _config_parser.parse_known_args()
+_oracle_yaml = _load_oracle_yaml(_config_args.oracle_config)
+
 parser = argparse.ArgumentParser(description="Simple demo oracle for AIC-Port-Insertion-v0.")
-parser.add_argument("--task", type=str, default="AIC-Port-Insertion-v0")
-parser.add_argument("--num_envs", type=int, default=1)
-parser.add_argument("--step_hz", type=int, default=30)
-parser.add_argument("--max_episode_steps", type=int, default=1200)
+parser.add_argument(
+    "--oracle_config",
+    type=str,
+    default=str(Path(_config_args.oracle_config).expanduser()),
+    help="YAML file with oracle defaults. CLI flags override values from this file.",
+)
+parser.add_argument("--task", type=str, default=_cfg(_oracle_yaml, "task", "AIC-Port-Insertion-v0"))
+parser.add_argument("--num_envs", type=int, default=_cfg(_oracle_yaml, "num_envs", 1))
+parser.add_argument("--step_hz", type=int, default=_cfg(_oracle_yaml, "step_hz", 30))
+parser.add_argument("--max_episode_steps", type=int, default=_cfg(_oracle_yaml, "max_episode_steps", 1200))
 parser.add_argument(
     "--assume_port_visible",
     action=argparse.BooleanOptionalAction,
-    default=True,
+    default=_cfg(_oracle_yaml, "assume_port_visible", True),
     help="Start the approach plan immediately. Later this can be driven by camera keypoint visibility.",
 )
 approach_group = parser.add_argument_group("approach phase tuning")
-approach_group.add_argument("--approach_nominal_speed", type=float, default=0.08, help="Quintic approach duration speed in m/s.")
+approach_group.add_argument(
+    "--approach_nominal_speed",
+    type=float,
+    default=_cfg(_oracle_yaml, "approach.nominal_speed", 0.08),
+    help="Quintic approach duration speed in m/s.",
+)
 approach_group.add_argument(
     "--approach_end_speed",
     type=float,
-    default=0.0,
+    default=_cfg(_oracle_yaml, "approach.end_speed", 0.0),
     help="Desired approach endpoint velocity along the nominal insertion axis in m/s.",
 )
-approach_group.add_argument("--approach_min_duration", type=float, default=2.0, help="Minimum quintic approach duration in seconds.")
-approach_group.add_argument("--approach_max_duration", type=float, default=10.0, help="Maximum quintic approach duration in seconds.")
-approach_group.add_argument("--approach_rot_speed_deg", type=float, default=60.0, help="Delayed approach rotation speed in deg/s.")
-approach_group.add_argument("--approach_rot_min_duration", type=float, default=0.2, help="Minimum nonzero approach rotation duration.")
-approach_group.add_argument("--approach_rot_margin", type=float, default=0.0, help="Seconds before approach end for rotation to finish.")
-approach_group.add_argument("--approach_position_threshold", type=float, default=0.01)
-approach_group.add_argument("--approach_orientation_threshold_deg", type=float, default=8.0)
-approach_group.add_argument("--approach_max_linear_speed", type=float, default=0.2, help="APPROACH tracking speed limit in m/s.")
-approach_group.add_argument("--approach_max_angular_speed_deg", type=float, default=140.0, help="APPROACH tracking speed limit in deg/s.")
+approach_group.add_argument(
+    "--approach_min_duration",
+    type=float,
+    default=_cfg(_oracle_yaml, "approach.min_duration", 2.0),
+    help="Minimum quintic approach duration in seconds.",
+)
+approach_group.add_argument(
+    "--approach_max_duration",
+    type=float,
+    default=_cfg(_oracle_yaml, "approach.max_duration", 10.0),
+    help="Maximum quintic approach duration in seconds.",
+)
+approach_group.add_argument(
+    "--approach_rot_speed_deg",
+    type=float,
+    default=_cfg(_oracle_yaml, "approach.rotation_speed_deg", 60.0),
+    help="Delayed approach rotation speed in deg/s.",
+)
+approach_group.add_argument(
+    "--approach_rot_min_duration",
+    type=float,
+    default=_cfg(_oracle_yaml, "approach.rotation_min_duration", 0.2),
+    help="Minimum nonzero approach rotation duration.",
+)
+approach_group.add_argument(
+    "--approach_rot_margin",
+    type=float,
+    default=_cfg(_oracle_yaml, "approach.rotation_margin", 0.0),
+    help="Seconds before approach end for rotation to finish.",
+)
+approach_group.add_argument(
+    "--approach_position_threshold",
+    type=float,
+    default=_cfg(_oracle_yaml, "approach.position_threshold", 0.01),
+)
+approach_group.add_argument(
+    "--approach_orientation_threshold_deg",
+    type=float,
+    default=_cfg(_oracle_yaml, "approach.orientation_threshold_deg", 8.0),
+)
+approach_group.add_argument(
+    "--approach_max_linear_speed",
+    type=float,
+    default=_cfg(_oracle_yaml, "approach.max_linear_speed", 0.2),
+    help="APPROACH tracking speed limit in m/s.",
+)
+approach_group.add_argument(
+    "--approach_max_angular_speed_deg",
+    type=float,
+    default=_cfg(_oracle_yaml, "approach.max_angular_speed_deg", 140.0),
+    help="APPROACH tracking speed limit in deg/s.",
+)
 
 align_group = parser.add_argument_group("align phase tuning")
 align_group.add_argument(
     "--align_lateral_threshold",
     type=float,
-    default=0.001,
+    default=_cfg(_oracle_yaml, "align.lateral_threshold", 0.001),
     help="Max perpendicular error to the nominal insertion line before ALIGN can enter INSERT, meters.",
 )
 align_group.add_argument(
     "--align_orientation_threshold_deg",
     type=float,
-    default=1.0,
+    default=_cfg(_oracle_yaml, "align.orientation_threshold_deg", 1.0),
     help="Max final-orientation error before ALIGN can enter INSERT, degrees.",
 )
-align_group.add_argument("--align_max_linear_speed", type=float, default=0.02, help="ALIGN tracking speed limit in m/s.")
-align_group.add_argument("--align_max_angular_speed_deg", type=float, default=40.0, help="ALIGN tracking speed limit in deg/s.")
+align_group.add_argument(
+    "--align_max_linear_speed",
+    type=float,
+    default=_cfg(_oracle_yaml, "align.max_linear_speed", 0.02),
+    help="ALIGN tracking speed limit in m/s.",
+)
+align_group.add_argument(
+    "--align_max_angular_speed_deg",
+    type=float,
+    default=_cfg(_oracle_yaml, "align.max_angular_speed_deg", 40.0),
+    help="ALIGN tracking speed limit in deg/s.",
+)
 
 insert_group = parser.add_argument_group("insert phase tuning")
-insert_group.add_argument("--insert_speed", type=float, default=0.010, help="Target insertion speed in m/s.")
-insert_group.add_argument("--insert_min_lookahead", type=float, default=0.001, help="Minimum INSERT target lead in meters.")
-insert_group.add_argument("--insert_max_lookahead", type=float, default=0.003, help="Maximum INSERT target lead in meters.")
+insert_group.add_argument(
+    "--insert_speed",
+    type=float,
+    default=_cfg(_oracle_yaml, "insert.speed", 0.010),
+    help="Target insertion speed in m/s.",
+)
+insert_group.add_argument(
+    "--insert_min_lookahead",
+    type=float,
+    default=_cfg(_oracle_yaml, "insert.min_lookahead", 0.001),
+    help="Minimum INSERT target lead in meters.",
+)
+insert_group.add_argument(
+    "--insert_max_lookahead",
+    type=float,
+    default=_cfg(_oracle_yaml, "insert.max_lookahead", 0.003),
+    help="Maximum INSERT target lead in meters.",
+)
 insert_group.add_argument(
     "--insert_lateral_threshold",
     type=float,
-    default=0.003,
+    default=_cfg(_oracle_yaml, "insert.lateral_threshold", 0.003),
     help="Max perpendicular error to the insertion line before insertion depth is allowed to advance, meters.",
 )
 insert_group.add_argument(
     "--insert_orientation_threshold_deg",
     type=float,
-    default=2.0,
+    default=_cfg(_oracle_yaml, "insert.orientation_threshold_deg", 2.0),
     help="Max tip orientation error before insertion depth is allowed to advance, degrees.",
 )
-insert_group.add_argument("--insert_max_linear_speed", type=float, default=0.025, help="INSERT tracking speed limit in m/s.")
-insert_group.add_argument("--insert_max_angular_speed_deg", type=float, default=20.0, help="INSERT tracking speed limit in deg/s.")
-insert_group.add_argument("--final_position_threshold", type=float, default=0.003)
-parser.add_argument("--pos_gain", type=float, default=1.2)
-parser.add_argument("--rot_gain", type=float, default=0.5)
-parser.add_argument("--log_every", type=int, default=5, help="0 disables periodic logging.")
+insert_group.add_argument(
+    "--insert_max_linear_speed",
+    type=float,
+    default=_cfg(_oracle_yaml, "insert.max_linear_speed", 0.025),
+    help="INSERT tracking speed limit in m/s.",
+)
+insert_group.add_argument(
+    "--insert_max_angular_speed_deg",
+    type=float,
+    default=_cfg(_oracle_yaml, "insert.max_angular_speed_deg", 20.0),
+    help="INSERT tracking speed limit in deg/s.",
+)
+insert_group.add_argument(
+    "--final_position_threshold",
+    type=float,
+    default=_cfg(_oracle_yaml, "insert.final_position_threshold", 0.003),
+)
+parser.add_argument("--pos_gain", type=float, default=_cfg(_oracle_yaml, "gains.pos", 1.2))
+parser.add_argument("--rot_gain", type=float, default=_cfg(_oracle_yaml, "gains.rot", 0.5))
+parser.add_argument("--log_every", type=int, default=_cfg(_oracle_yaml, "logging.log_every", 5), help="0 disables periodic logging.")
 parser.add_argument(
     "--log_path_xy_error",
-    action="store_true",
-    default=False,
+    action=argparse.BooleanOptionalAction,
+    default=_cfg(_oracle_yaml, "logging.log_path_xy_error", False),
     help="Log world-XY lateral error to the current insertion path target, ignoring Z.",
 )
-parser.add_argument("--stream", action="store_true", default=False)
+parser.add_argument("--stream", action=argparse.BooleanOptionalAction, default=_cfg(_oracle_yaml, "stream", False))
 parser.add_argument(
     "--point_log_path",
     type=str,
-    default=None,
+    default=_cfg(_oracle_yaml, "point_log.path", None),
     help="JSONL path for per-step port/tip/TCP point positions. Default writes to logs/ with a timestamp.",
 )
 parser.add_argument(
     "--disable_point_log",
     action="store_true",
-    default=True,
+    default=_cfg(_oracle_yaml, "point_log.disabled", True),
     help="Disable the per-step JSONL point-position log.",
+)
+parser.add_argument(
+    "--enable_point_log",
+    action="store_false",
+    dest="disable_point_log",
+    default=argparse.SUPPRESS,
+    help="Enable the per-step JSONL point-position log.",
 )
 parser.add_argument(
     "--point_log_env_index",
     type=int,
-    default=0,
+    default=_cfg(_oracle_yaml, "point_log.env_index", 0),
     help="Environment index to write to the per-step point-position log.",
 )
 parser.add_argument(
     "--start_joint_pos",
     type=float,
     nargs=6,
-    default=(0.55, -1.3642, -1.6648, -1.6933, 1.5710, 1.4110),
+    default=_cfg(_oracle_yaml, "start.joint_pos", (0.55, -1.3642, -1.6648, -1.6933, 1.5710, 1.4110)),
     metavar=("SHOULDER_PAN", "SHOULDER_LIFT", "ELBOW", "WRIST_1", "WRIST_2", "WRIST_3"),
     help="Deterministic UR5e start joints in radians, applied after env.reset().",
 )
 parser.add_argument(
     "--disable_start_joint_reset",
-    action="store_true",
-    default=False,
+    action=argparse.BooleanOptionalAction,
+    default=_cfg(_oracle_yaml, "start.disable_joint_reset", False),
     help="Do not force the deterministic start joints after env.reset().",
 )
 parser.add_argument(
     "--start_settle_steps",
     type=int,
-    default=20,
+    default=_cfg(_oracle_yaml, "start.settle_steps", 20),
     help="Zero-action settle steps after applying --start_joint_pos.",
 )
-parser.set_defaults(use_fabric=True)
-parser.add_argument("--disable_fabric", action="store_false", dest="use_fabric")
+parser.set_defaults(use_fabric=_cfg(_oracle_yaml, "use_fabric", True))
+parser.add_argument("--use_fabric", action="store_true", dest="use_fabric", default=argparse.SUPPRESS)
+parser.add_argument("--disable_fabric", action="store_false", dest="use_fabric", default=argparse.SUPPRESS)
 
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -135,7 +268,6 @@ import contextlib
 from datetime import datetime
 import json
 import math
-from pathlib import Path
 import time
 
 import gymnasium as gym
@@ -356,6 +488,7 @@ def main() -> None:
     step_dt = _env_step_dt(env)
 
     print(f"[INFO] Running simple NIC insert oracle on {args_cli.task}")
+    print(f"[INFO] oracle config: {args_cli.oracle_config}")
     print(f"[INFO] Action scale: {action_scale[0].detach().cpu().tolist()}")
     if not args_cli.disable_start_joint_reset:
         print(f"[INFO] start_joint_pos: {tuple(args_cli.start_joint_pos)}")

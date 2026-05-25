@@ -1,0 +1,57 @@
+# Defaults for scripts/il/nic_card_insert_oracle.py.
+# CLI flags still override these values.
+
+task: AIC-Port-Insertion-v0
+num_envs: 1
+step_hz: 30
+max_episode_steps: 9000
+assume_port_visible: true
+stream: false
+use_fabric: true
+
+gains:
+  pos: 1.2
+  rot: 0.5
+
+approach:
+  nominal_speed: 0.08
+  end_speed: 0.0
+  min_duration: 2.0
+  max_duration: 10.0
+  rotation_speed_deg: 60.0
+  rotation_min_duration: 0.2
+  rotation_margin: 0.0
+  position_threshold: 0.01
+  orientation_threshold_deg: 8.0
+  max_linear_speed: 0.2
+  max_angular_speed_deg: 140.0
+
+align:
+  lateral_threshold: 0.001
+  orientation_threshold_deg: 1.0
+  max_linear_speed: 0.02
+  max_angular_speed_deg: 40.0
+
+insert:
+  speed: 0.010
+  min_lookahead: 0.001
+  max_lookahead: 0.003
+  lateral_threshold: 0.003
+  orientation_threshold_deg: 2.0
+  max_linear_speed: 0.025
+  max_angular_speed_deg: 20.0
+  final_position_threshold: 0.003
+
+logging:
+  log_every: 5
+  log_path_xy_error: false
+
+point_log:
+  disabled: true
+  path: null
+  env_index: 0
+
+start:
+  joint_pos: [0.55, -1.3642, -1.6648, -1.6933, 1.5710, 1.4110]
+  disable_joint_reset: false
+  settle_steps: 20
