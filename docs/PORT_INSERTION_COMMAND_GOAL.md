@@ -197,22 +197,8 @@ These are script control/debug defaults, not task-goal definitions:
 | --- | --- |
 | `--step_hz` | `30` |
 | `--max_episode_steps` | `1200` |
-| `--approach_threshold` | `0.015` m |
-| `--align_lateral_threshold` | `0.003` m |
-| `--align_orientation_threshold_deg` | `2.0` deg |
-| `--align_max_pos_delta` | `0.004` m |
-| `--align_max_rot_delta` | `0.05` rad |
-| `--insert_lateral_threshold` | `0.003` m |
-| `--insert_orientation_threshold_deg` | `2.0` deg |
-| `--insert_lookahead` | `0.001` m |
-| `--final_threshold` | `0.003` m |
-| `--insert_speed` | `0.010` m/s |
 | `--pos_gain` | `1.2` |
 | `--rot_gain` | `0.2` |
-| `--max_pos_delta` | `0.020` m |
-| `--insert_max_pos_delta` | `0.005` m |
-| `--insert_max_rot_delta` | `0.03` rad |
-| `--max_rot_delta` | `2.5` |
 | `--assume_port_visible` | `True` |
 | `--approach_nominal_speed` | `0.035` m/s |
 | `--approach_end_speed` | `0.005` m/s |
@@ -221,12 +207,33 @@ These are script control/debug defaults, not task-goal definitions:
 | `--approach_rot_speed_deg` | `30.0` deg/s |
 | `--approach_rot_min_duration` | `0.5` s |
 | `--approach_rot_margin` | `0.25` s |
+| `--approach_position_threshold` | `0.015` m |
+| `--approach_orientation_threshold_deg` | `2.0` deg |
+| `--approach_max_linear_speed` | `0.12` m/s |
+| `--approach_max_angular_speed_deg` | `90.0` deg/s |
+| `--align_lateral_threshold` | `0.003` m |
+| `--align_orientation_threshold_deg` | `2.0` deg |
+| `--align_max_linear_speed` | `0.04` m/s |
+| `--align_max_angular_speed_deg` | `45.0` deg/s |
+| `--insert_speed` | `0.010` m/s |
+| `--insert_min_lookahead` | `0.001` m |
+| `--insert_max_lookahead` | `0.003` m |
+| `--insert_lateral_threshold` | `0.003` m |
+| `--insert_orientation_threshold_deg` | `2.0` deg |
+| `--insert_max_linear_speed` | `0.015` m/s |
+| `--insert_max_angular_speed_deg` | `20.0` deg/s |
+| `--final_position_threshold` | `0.003` m |
 | `--log_every` | `5` steps |
 | point logging | disabled by default |
 | point-log env | `0` |
 | start joints | `(0.55, -1.3642, -1.6648, -1.6933, 1.5710, 1.4110)` |
 | start settle steps | `20` |
 | Fabric | enabled by default |
+
+The user-facing phase tracking limits are physical speeds.  The controller
+multiplies each phase's linear/angular speed by `env.step_dt` to get the
+per-step command clamp, so changing sim/control Hz does not change the intended
+motion speed.
 
 The runner no longer has `--port_index`, `--target_xz_offset`,
 `--approach_offset`, or `--hold_steps`.  Those were removed so the script cannot

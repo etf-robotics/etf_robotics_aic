@@ -17,59 +17,61 @@ parser.add_argument(
     default=True,
     help="Start the approach plan immediately. Later this can be driven by camera keypoint visibility.",
 )
-parser.add_argument("--approach_nominal_speed", type=float, default=0.035, help="Quintic approach duration speed in m/s.")
-parser.add_argument(
+approach_group = parser.add_argument_group("approach phase tuning")
+approach_group.add_argument("--approach_nominal_speed", type=float, default=0.08, help="Quintic approach duration speed in m/s.")
+approach_group.add_argument(
     "--approach_end_speed",
     type=float,
-    default=0.005,
+    default=0.0,
     help="Desired approach endpoint velocity along the nominal insertion axis in m/s.",
 )
-parser.add_argument("--approach_min_duration", type=float, default=2.0, help="Minimum quintic approach duration in seconds.")
-parser.add_argument("--approach_max_duration", type=float, default=8.0, help="Maximum quintic approach duration in seconds.")
-parser.add_argument("--approach_rot_speed_deg", type=float, default=30.0, help="Delayed approach rotation speed in deg/s.")
-parser.add_argument("--approach_rot_min_duration", type=float, default=0.5, help="Minimum nonzero approach rotation duration.")
-parser.add_argument("--approach_rot_margin", type=float, default=0.25, help="Seconds before approach end for rotation to finish.")
-parser.add_argument("--approach_threshold", type=float, default=0.015)
-parser.add_argument(
+approach_group.add_argument("--approach_min_duration", type=float, default=2.0, help="Minimum quintic approach duration in seconds.")
+approach_group.add_argument("--approach_max_duration", type=float, default=10.0, help="Maximum quintic approach duration in seconds.")
+approach_group.add_argument("--approach_rot_speed_deg", type=float, default=60.0, help="Delayed approach rotation speed in deg/s.")
+approach_group.add_argument("--approach_rot_min_duration", type=float, default=0.2, help="Minimum nonzero approach rotation duration.")
+approach_group.add_argument("--approach_rot_margin", type=float, default=0.0, help="Seconds before approach end for rotation to finish.")
+approach_group.add_argument("--approach_position_threshold", type=float, default=0.01)
+approach_group.add_argument("--approach_orientation_threshold_deg", type=float, default=8.0)
+approach_group.add_argument("--approach_max_linear_speed", type=float, default=0.2, help="APPROACH tracking speed limit in m/s.")
+approach_group.add_argument("--approach_max_angular_speed_deg", type=float, default=140.0, help="APPROACH tracking speed limit in deg/s.")
+
+align_group = parser.add_argument_group("align phase tuning")
+align_group.add_argument(
     "--align_lateral_threshold",
     type=float,
-    default=0.003,
+    default=0.001,
     help="Max perpendicular error to the nominal insertion line before ALIGN can enter INSERT, meters.",
 )
-parser.add_argument(
+align_group.add_argument(
     "--align_orientation_threshold_deg",
     type=float,
-    default=2.0,
+    default=1.0,
     help="Max final-orientation error before ALIGN can enter INSERT, degrees.",
 )
-parser.add_argument("--align_max_pos_delta", type=float, default=0.004, help="Max ALIGN position command delta in meters.")
-parser.add_argument("--align_max_rot_delta", type=float, default=0.05, help="Max ALIGN rotation command delta in radians.")
-parser.add_argument(
+align_group.add_argument("--align_max_linear_speed", type=float, default=0.02, help="ALIGN tracking speed limit in m/s.")
+align_group.add_argument("--align_max_angular_speed_deg", type=float, default=40.0, help="ALIGN tracking speed limit in deg/s.")
+
+insert_group = parser.add_argument_group("insert phase tuning")
+insert_group.add_argument("--insert_speed", type=float, default=0.010, help="Target insertion speed in m/s.")
+insert_group.add_argument("--insert_min_lookahead", type=float, default=0.001, help="Minimum INSERT target lead in meters.")
+insert_group.add_argument("--insert_max_lookahead", type=float, default=0.003, help="Maximum INSERT target lead in meters.")
+insert_group.add_argument(
     "--insert_lateral_threshold",
     type=float,
     default=0.003,
     help="Max perpendicular error to the insertion line before insertion depth is allowed to advance, meters.",
 )
-parser.add_argument(
+insert_group.add_argument(
     "--insert_orientation_threshold_deg",
     type=float,
     default=2.0,
     help="Max tip orientation error before insertion depth is allowed to advance, degrees.",
 )
-parser.add_argument(
-    "--insert_lookahead",
-    type=float,
-    default=0.001,
-    help="Minimum forward lookahead in meters while INSERT is aligned.",
-)
-parser.add_argument("--final_threshold", type=float, default=0.003)
-parser.add_argument("--insert_speed", type=float, default=0.010, help="Target insertion speed in m/s.")
+insert_group.add_argument("--insert_max_linear_speed", type=float, default=0.025, help="INSERT tracking speed limit in m/s.")
+insert_group.add_argument("--insert_max_angular_speed_deg", type=float, default=20.0, help="INSERT tracking speed limit in deg/s.")
+insert_group.add_argument("--final_position_threshold", type=float, default=0.003)
 parser.add_argument("--pos_gain", type=float, default=1.2)
-parser.add_argument("--rot_gain", type=float, default=0.2)
-parser.add_argument("--max_pos_delta", type=float, default=0.020)
-parser.add_argument("--insert_max_pos_delta", type=float, default=0.005)
-parser.add_argument("--insert_max_rot_delta", type=float, default=0.03)
-parser.add_argument("--max_rot_delta", type=float, default=2.5)
+parser.add_argument("--rot_gain", type=float, default=0.5)
 parser.add_argument("--log_every", type=int, default=5, help="0 disables periodic logging.")
 parser.add_argument(
     "--log_path_xy_error",
@@ -165,6 +167,110 @@ def _oracle_module():
     return nic_card_insert_oracle
 
 
+def _require_positive(name: str, value: float) -> None:
+    if value <= 0.0:
+        raise ValueError(f"{name} must be positive, got {value}.")
+
+
+def _require_non_negative(name: str, value: float) -> None:
+    if value < 0.0:
+        raise ValueError(f"{name} must be non-negative, got {value}.")
+
+
+def _build_oracle_cfg(oracle):
+    """Build phase-based oracle config from physical-unit CLI arguments."""
+    return oracle.SimpleNicInsertOracleCfg(
+        pos_gain=args_cli.pos_gain,
+        rot_gain=args_cli.rot_gain,
+        approach=oracle.ApproachPhaseCfg(
+            nominal_speed=args_cli.approach_nominal_speed,
+            end_speed=args_cli.approach_end_speed,
+            min_duration=args_cli.approach_min_duration,
+            max_duration=args_cli.approach_max_duration,
+            rotation_speed=math.radians(args_cli.approach_rot_speed_deg),
+            rotation_min_duration=args_cli.approach_rot_min_duration,
+            rotation_margin=args_cli.approach_rot_margin,
+            position_threshold=args_cli.approach_position_threshold,
+            orientation_threshold=math.radians(args_cli.approach_orientation_threshold_deg),
+            tracking=oracle.PhaseTrackingCfg(
+                max_linear_speed=args_cli.approach_max_linear_speed,
+                max_angular_speed=math.radians(args_cli.approach_max_angular_speed_deg),
+            ),
+        ),
+        align=oracle.AlignPhaseCfg(
+            lateral_threshold=args_cli.align_lateral_threshold,
+            orientation_threshold=math.radians(args_cli.align_orientation_threshold_deg),
+            tracking=oracle.PhaseTrackingCfg(
+                max_linear_speed=args_cli.align_max_linear_speed,
+                max_angular_speed=math.radians(args_cli.align_max_angular_speed_deg),
+            ),
+        ),
+        insert=oracle.InsertPhaseCfg(
+            speed=args_cli.insert_speed,
+            min_lookahead=args_cli.insert_min_lookahead,
+            max_lookahead=args_cli.insert_max_lookahead,
+            lateral_threshold=args_cli.insert_lateral_threshold,
+            orientation_threshold=math.radians(args_cli.insert_orientation_threshold_deg),
+            final_position_threshold=args_cli.final_position_threshold,
+            tracking=oracle.PhaseTrackingCfg(
+                max_linear_speed=args_cli.insert_max_linear_speed,
+                max_angular_speed=math.radians(args_cli.insert_max_angular_speed_deg),
+            ),
+        ),
+    )
+
+
+def _print_oracle_cfg(cfg, step_dt: float) -> None:
+    print(f"[INFO] oracle gains: pos={cfg.pos_gain:.3f}, rot={cfg.rot_gain:.3f}")
+    _print_tracking_block(
+        "APPROACH",
+        cfg.approach.tracking,
+        step_dt,
+        extra=(
+            f"nominal={cfg.approach.nominal_speed:.4f} m/s, "
+            f"end={cfg.approach.end_speed:.4f} m/s, "
+            f"duration=[{cfg.approach.min_duration:.2f}, {cfg.approach.max_duration:.2f}] s, "
+            f"rot={math.degrees(cfg.approach.rotation_speed):.2f} deg/s, "
+            f"rot_min={cfg.approach.rotation_min_duration:.2f} s, "
+            f"rot_margin={cfg.approach.rotation_margin:.2f} s, "
+            f"gate=({cfg.approach.position_threshold:.4f} m, "
+            f"{math.degrees(cfg.approach.orientation_threshold):.2f} deg)"
+        ),
+    )
+    _print_tracking_block(
+        "ALIGN",
+        cfg.align.tracking,
+        step_dt,
+        extra=(
+            f"gate=(lateral {cfg.align.lateral_threshold:.4f} m, "
+            f"orientation {math.degrees(cfg.align.orientation_threshold):.2f} deg)"
+        ),
+    )
+    _print_tracking_block(
+        "INSERT",
+        cfg.insert.tracking,
+        step_dt,
+        extra=(
+            f"speed={cfg.insert.speed:.4f} m/s, "
+            f"lookahead=[{cfg.insert.min_lookahead:.4f}, {cfg.insert.max_lookahead:.4f}] m, "
+            f"gate=(lateral {cfg.insert.lateral_threshold:.4f} m, "
+            f"orientation {math.degrees(cfg.insert.orientation_threshold):.2f} deg), "
+            f"final_pos={cfg.insert.final_position_threshold:.4f} m"
+        ),
+    )
+
+
+def _print_tracking_block(name: str, tracking, step_dt: float, *, extra: str) -> None:
+    linear_delta = tracking.max_linear_speed * step_dt
+    angular_delta = tracking.max_angular_speed * step_dt
+    print(
+        f"[INFO] phase {name}: {extra}; "
+        f"tracking={tracking.max_linear_speed:.4f} m/s -> {linear_delta:.5f} m/step, "
+        f"{math.degrees(tracking.max_angular_speed):.2f} deg/s -> "
+        f"{math.degrees(angular_delta):.3f} deg/step"
+    )
+
+
 class RateLimiter:
     """Enforce a target loop rate by polling and rendering."""
 
@@ -190,26 +296,34 @@ def main() -> None:
         raise ValueError(f"--max_episode_steps must be positive, got {args_cli.max_episode_steps}.")
     if args_cli.step_hz <= 0:
         raise ValueError(f"--step_hz must be positive, got {args_cli.step_hz}.")
-    if args_cli.approach_nominal_speed <= 0.0:
-        raise ValueError(f"--approach_nominal_speed must be positive, got {args_cli.approach_nominal_speed}.")
-    if args_cli.approach_min_duration <= 0.0:
-        raise ValueError(f"--approach_min_duration must be positive, got {args_cli.approach_min_duration}.")
+    _require_positive("--approach_nominal_speed", args_cli.approach_nominal_speed)
+    _require_non_negative("--approach_end_speed", args_cli.approach_end_speed)
+    _require_positive("--approach_min_duration", args_cli.approach_min_duration)
     if args_cli.approach_max_duration < args_cli.approach_min_duration:
         raise ValueError("--approach_max_duration must be >= --approach_min_duration.")
-    if args_cli.approach_rot_speed_deg <= 0.0:
-        raise ValueError(f"--approach_rot_speed_deg must be positive, got {args_cli.approach_rot_speed_deg}.")
-    if args_cli.align_lateral_threshold < 0.0:
-        raise ValueError(f"--align_lateral_threshold must be non-negative, got {args_cli.align_lateral_threshold}.")
-    if args_cli.align_orientation_threshold_deg < 0.0:
-        raise ValueError(
-            f"--align_orientation_threshold_deg must be non-negative, got {args_cli.align_orientation_threshold_deg}."
-        )
-    if args_cli.align_max_pos_delta <= 0.0:
-        raise ValueError(f"--align_max_pos_delta must be positive, got {args_cli.align_max_pos_delta}.")
-    if args_cli.align_max_rot_delta <= 0.0:
-        raise ValueError(f"--align_max_rot_delta must be positive, got {args_cli.align_max_rot_delta}.")
-    if args_cli.insert_max_rot_delta <= 0.0:
-        raise ValueError(f"--insert_max_rot_delta must be positive, got {args_cli.insert_max_rot_delta}.")
+    _require_positive("--approach_rot_speed_deg", args_cli.approach_rot_speed_deg)
+    _require_non_negative("--approach_rot_min_duration", args_cli.approach_rot_min_duration)
+    _require_non_negative("--approach_rot_margin", args_cli.approach_rot_margin)
+    _require_non_negative("--approach_position_threshold", args_cli.approach_position_threshold)
+    _require_non_negative("--approach_orientation_threshold_deg", args_cli.approach_orientation_threshold_deg)
+    _require_positive("--approach_max_linear_speed", args_cli.approach_max_linear_speed)
+    _require_positive("--approach_max_angular_speed_deg", args_cli.approach_max_angular_speed_deg)
+    _require_non_negative("--align_lateral_threshold", args_cli.align_lateral_threshold)
+    _require_non_negative("--align_orientation_threshold_deg", args_cli.align_orientation_threshold_deg)
+    _require_positive("--align_max_linear_speed", args_cli.align_max_linear_speed)
+    _require_positive("--align_max_angular_speed_deg", args_cli.align_max_angular_speed_deg)
+    _require_positive("--insert_speed", args_cli.insert_speed)
+    _require_non_negative("--insert_min_lookahead", args_cli.insert_min_lookahead)
+    _require_positive("--insert_max_lookahead", args_cli.insert_max_lookahead)
+    if args_cli.insert_max_lookahead < args_cli.insert_min_lookahead:
+        raise ValueError("--insert_max_lookahead must be >= --insert_min_lookahead.")
+    _require_non_negative("--insert_lateral_threshold", args_cli.insert_lateral_threshold)
+    _require_non_negative("--insert_orientation_threshold_deg", args_cli.insert_orientation_threshold_deg)
+    _require_positive("--insert_max_linear_speed", args_cli.insert_max_linear_speed)
+    _require_positive("--insert_max_angular_speed_deg", args_cli.insert_max_angular_speed_deg)
+    _require_non_negative("--final_position_threshold", args_cli.final_position_threshold)
+    _require_non_negative("--pos_gain", args_cli.pos_gain)
+    _require_non_negative("--rot_gain", args_cli.rot_gain)
 
     env_cfg = parse_env_cfg(
         args_cli.task,
@@ -227,6 +341,7 @@ def main() -> None:
         attach_default_camera_stream(env)
 
     oracle = _oracle_module()
+    oracle_cfg = _build_oracle_cfg(oracle)
     action_scale = oracle.get_action_scale(env, env.action_space.shape[-1])
     rate_limiter = RateLimiter(args_cli.step_hz)
 
@@ -238,6 +353,7 @@ def main() -> None:
     goal = oracle.get_insertion_goal(env)
     world_targets = oracle.compute_simple_nic_insert_world_targets(env)
     state = oracle.make_simple_nic_insert_state(env)
+    step_dt = _env_step_dt(env)
 
     print(f"[INFO] Running simple NIC insert oracle on {args_cli.task}")
     print(f"[INFO] Action scale: {action_scale[0].detach().cpu().tolist()}")
@@ -246,36 +362,8 @@ def main() -> None:
     print(f"[INFO] selected port: {goal.cfg.port_name}_link")
     print("[INFO] target mapping: command sfp_tip_link pose -> selected sfp_port_N_link pose")
     print(f"[INFO] assume_port_visible: {args_cli.assume_port_visible}")
-    print(
-        "[INFO] quintic approach: "
-        f"nominal_speed={args_cli.approach_nominal_speed:.4f} m/s, "
-        f"end_speed={args_cli.approach_end_speed:.4f} m/s, "
-        f"duration=[{args_cli.approach_min_duration:.2f}, {args_cli.approach_max_duration:.2f}] s"
-    )
-    print(
-        "[INFO] delayed approach rotation: "
-        f"speed={args_cli.approach_rot_speed_deg:.2f} deg/s, "
-        f"min_duration={args_cli.approach_rot_min_duration:.2f} s, "
-        f"finish_margin={args_cli.approach_rot_margin:.2f} s"
-    )
-    print(
-        "[INFO] insert advance gate: "
-        f"lateral={args_cli.insert_lateral_threshold:.4f} m, "
-        f"orientation={args_cli.insert_orientation_threshold_deg:.2f} deg, "
-        f"lookahead={args_cli.insert_lookahead:.4f} m"
-    )
-    print(
-        "[INFO] align gate: "
-        f"lateral={args_cli.align_lateral_threshold:.4f} m, "
-        f"orientation={args_cli.align_orientation_threshold_deg:.2f} deg, "
-        f"max_pos_delta={args_cli.align_max_pos_delta:.4f} m, "
-        f"max_rot_delta={args_cli.align_max_rot_delta:.4f} rad"
-    )
-    print(
-        "[INFO] insert limits: "
-        f"max_pos_delta={args_cli.insert_max_pos_delta:.4f} m, "
-        f"max_rot_delta={args_cli.insert_max_rot_delta:.4f} rad"
-    )
+    print(f"[INFO] env step_dt: {step_dt:.6f} s")
+    _print_oracle_cfg(oracle_cfg, step_dt)
     print(f"[INFO] approach_offset in selected port frame: {tuple(goal.cfg.approach_offset_local)}")
     print(f"[INFO] approach_pos_noise_local: {tuple(goal.cfg.approach_pos_noise_local)}")
     print(
@@ -317,31 +405,9 @@ def main() -> None:
                     env,
                     action_scale,
                     state,
-                    pos_gain=args_cli.pos_gain,
-                    rot_gain=args_cli.rot_gain,
-                    max_pos_delta=args_cli.max_pos_delta,
-                    insert_max_pos_delta=args_cli.insert_max_pos_delta,
-                    max_rot_delta=args_cli.max_rot_delta,
+                    cfg=oracle_cfg,
                     port_visible=args_cli.assume_port_visible,
-                    approach_nominal_speed=args_cli.approach_nominal_speed,
-                    approach_end_speed=args_cli.approach_end_speed,
-                    approach_min_duration=args_cli.approach_min_duration,
-                    approach_max_duration=args_cli.approach_max_duration,
-                    approach_rot_speed=math.radians(args_cli.approach_rot_speed_deg),
-                    approach_rot_min_duration=args_cli.approach_rot_min_duration,
-                    approach_rot_margin=args_cli.approach_rot_margin,
-                    approach_threshold=args_cli.approach_threshold,
-                    align_lateral_threshold=args_cli.align_lateral_threshold,
-                    align_orientation_threshold=math.radians(args_cli.align_orientation_threshold_deg),
-                    align_max_pos_delta=args_cli.align_max_pos_delta,
-                    align_max_rot_delta=args_cli.align_max_rot_delta,
-                    insert_lateral_threshold=args_cli.insert_lateral_threshold,
-                    insert_orientation_threshold=math.radians(args_cli.insert_orientation_threshold_deg),
-                    insert_lookahead=args_cli.insert_lookahead,
-                    insert_max_rot_delta=args_cli.insert_max_rot_delta,
-                    final_threshold=args_cli.final_threshold,
-                    insert_speed=args_cli.insert_speed,
-                    step_dt=_env_step_dt(env),
+                    step_dt=step_dt,
                 )
                 if point_logger is not None:
                     logged_phase = oracle.SimpleNicInsertPhase(int(output.phase[point_logger.env_index])).name

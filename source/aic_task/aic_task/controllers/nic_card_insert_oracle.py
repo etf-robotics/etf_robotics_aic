@@ -8,7 +8,7 @@ pose relative to ``sfp_tip_link`` each step.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 import math
 
@@ -28,6 +28,78 @@ class SimpleNicInsertPhase(IntEnum):
     ALIGN = 4
     INSERT = 5
     HOLD = 6
+
+
+@dataclass
+class PhaseTrackingCfg:
+    """Physical tracking limits for one oracle phase."""
+
+    max_linear_speed: float
+    max_angular_speed: float
+
+
+@dataclass
+class ApproachPhaseCfg:
+    """Time-planned free-space approach configuration."""
+
+    nominal_speed: float = 0.035
+    end_speed: float = 0.005
+    min_duration: float = 2.0
+    max_duration: float = 8.0
+    rotation_speed: float = math.radians(30.0)
+    rotation_min_duration: float = 0.5
+    rotation_margin: float = 0.25
+    position_threshold: float = 0.015
+    orientation_threshold: float = math.radians(2.0)
+    tracking: PhaseTrackingCfg = field(
+        default_factory=lambda: PhaseTrackingCfg(
+            max_linear_speed=0.12,
+            max_angular_speed=math.radians(90.0),
+        )
+    )
+
+
+@dataclass
+class AlignPhaseCfg:
+    """Measured-state alignment back to the nominal insertion line."""
+
+    lateral_threshold: float = 0.003
+    orientation_threshold: float = math.radians(2.0)
+    tracking: PhaseTrackingCfg = field(
+        default_factory=lambda: PhaseTrackingCfg(
+            max_linear_speed=0.04,
+            max_angular_speed=math.radians(45.0),
+        )
+    )
+
+
+@dataclass
+class InsertPhaseCfg:
+    """Slow measured-state insertion configuration."""
+
+    speed: float = 0.010
+    min_lookahead: float = 0.001
+    max_lookahead: float = 0.003
+    lateral_threshold: float = 0.003
+    orientation_threshold: float = math.radians(2.0)
+    final_position_threshold: float = 0.003
+    tracking: PhaseTrackingCfg = field(
+        default_factory=lambda: PhaseTrackingCfg(
+            max_linear_speed=0.015,
+            max_angular_speed=math.radians(20.0),
+        )
+    )
+
+
+@dataclass
+class SimpleNicInsertOracleCfg:
+    """Phase-based oracle tuning in physical units."""
+
+    pos_gain: float = 1.2
+    rot_gain: float = 0.2
+    approach: ApproachPhaseCfg = field(default_factory=ApproachPhaseCfg)
+    align: AlignPhaseCfg = field(default_factory=AlignPhaseCfg)
+    insert: InsertPhaseCfg = field(default_factory=InsertPhaseCfg)
 
 
 @dataclass
@@ -395,33 +467,11 @@ def compute_simple_nic_insert_oracle(
     targets_or_state: SimpleNicInsertTargets | SimpleNicInsertState,
     state: SimpleNicInsertState | None = None,
     *,
+    cfg: SimpleNicInsertOracleCfg | None = None,
     command_name: str = "insertion_goal",
     tcp_body: str = "gripper_tcp",
     tip_body: str = "sfp_tip_link",
-    pos_gain: float = 1.2,
-    rot_gain: float = 0.2,
-    max_pos_delta: float = 0.020,
-    insert_max_pos_delta: float = 0.005,
-    max_rot_delta: float = 0.025,
     port_visible: bool | torch.Tensor = True,
-    approach_nominal_speed: float = 0.035,
-    approach_end_speed: float = 0.005,
-    approach_min_duration: float = 2.0,
-    approach_max_duration: float = 8.0,
-    approach_rot_speed: float = math.radians(30.0),
-    approach_rot_min_duration: float = 0.5,
-    approach_rot_margin: float = 0.25,
-    approach_threshold: float = 0.015,
-    align_lateral_threshold: float = 0.003,
-    align_orientation_threshold: float = math.radians(2.0),
-    align_max_pos_delta: float = 0.004,
-    align_max_rot_delta: float = 0.05,
-    insert_lateral_threshold: float = 0.003,
-    insert_orientation_threshold: float = math.radians(2.0),
-    insert_lookahead: float = 0.001,
-    insert_max_rot_delta: float = 0.03,
-    final_threshold: float = 0.003,
-    insert_speed: float = 0.010,
     step_dt: float = 1.0 / 30.0,
 ) -> SimpleNicInsertOracleOutput:
     """Compute one relative-IK action for direct ``sfp_tip_link`` insertion."""
@@ -430,6 +480,8 @@ def compute_simple_nic_insert_oracle(
         state = targets_or_state
     else:
         targets = targets_or_state
+    if cfg is None:
+        cfg = SimpleNicInsertOracleCfg()
 
     robot = env.scene["robot"]
     tcp_id = _first_body_id(robot, tcp_body)
@@ -439,7 +491,10 @@ def compute_simple_nic_insert_oracle(
     tip_pos_w = robot.data.body_pos_w[:, tip_id, :]
     tip_quat_w = robot.data.body_quat_w[:, tip_id, :]
     safe_step_dt = max(float(step_dt), 1.0e-6)
-    tip_vel_w = _clamp_vector_norm((tip_pos_w - state.prev_tip_pos_w) / safe_step_dt, max_pos_delta / safe_step_dt)
+    tip_vel_w = _clamp_vector_norm(
+        (tip_pos_w - state.prev_tip_pos_w) / safe_step_dt,
+        max(float(cfg.approach.tracking.max_linear_speed), 1.0e-6),
+    )
 
     # Recompute this live.  The cable/tool can flex, so a cached TCP-to-tip
     # transform is exactly the stale-transform trap we hit during debugging.
@@ -467,13 +522,13 @@ def compute_simple_nic_insert_oracle(
             tip_vel_w,
             tip_quat_w,
             plan_mask,
-            approach_nominal_speed=approach_nominal_speed,
-            approach_end_speed=approach_end_speed,
-            approach_min_duration=approach_min_duration,
-            approach_max_duration=approach_max_duration,
-            approach_rot_speed=approach_rot_speed,
-            approach_rot_min_duration=approach_rot_min_duration,
-            approach_rot_margin=approach_rot_margin,
+            approach_nominal_speed=cfg.approach.nominal_speed,
+            approach_end_speed=cfg.approach.end_speed,
+            approach_min_duration=cfg.approach.min_duration,
+            approach_max_duration=cfg.approach.max_duration,
+            approach_rot_speed=cfg.approach.rotation_speed,
+            approach_rot_min_duration=cfg.approach.rotation_min_duration,
+            approach_rot_margin=cfg.approach.rotation_margin,
         )
 
     approach_motion_mask = (state.phase == int(SimpleNicInsertPhase.APPROACH_P)) | (
@@ -497,8 +552,8 @@ def compute_simple_nic_insert_oracle(
     finished_approach_path = (
         ((state.phase == int(SimpleNicInsertPhase.APPROACH_P)) | (state.phase == int(SimpleNicInsertPhase.APPROACH_P_R)))
         & (state.plan_elapsed.squeeze(1) >= state.plan_duration.squeeze(1))
-        & (tip_position_error <= approach_threshold)
-        & (orientation_error <= insert_orientation_threshold)
+        & (tip_position_error <= cfg.approach.position_threshold)
+        & (orientation_error <= cfg.approach.orientation_threshold)
     )
     state.phase[finished_approach_path] = int(SimpleNicInsertPhase.ALIGN)
 
@@ -506,8 +561,8 @@ def compute_simple_nic_insert_oracle(
     state.insert_distance[align_mask] = path_distance[align_mask]
     align_ready = (
         align_mask
-        & (path_lateral_error <= align_lateral_threshold)
-        & (final_orientation_error <= align_orientation_threshold)
+        & (path_lateral_error <= cfg.align.lateral_threshold)
+        & (final_orientation_error <= cfg.align.orientation_threshold)
     )
     state.phase[align_ready] = int(SimpleNicInsertPhase.INSERT)
 
@@ -516,12 +571,22 @@ def compute_simple_nic_insert_oracle(
     advance_mask = (
         insert_mask
         & ~just_entered_insert
-        & (path_lateral_error <= insert_lateral_threshold)
-        & (final_orientation_error <= insert_orientation_threshold)
+        & (path_lateral_error <= cfg.insert.lateral_threshold)
+        & (final_orientation_error <= cfg.insert.orientation_threshold)
     )
-    state.insert_distance[insert_mask] = path_distance[insert_mask]
-    step_distance = max(insert_speed * step_dt, insert_lookahead)
-    state.insert_distance[advance_mask] = path_distance[advance_mask] + step_distance
+    correct_only_mask = insert_mask & ~advance_mask
+    state.insert_distance[correct_only_mask] = path_distance[correct_only_mask]
+    if bool(torch.any(advance_mask)):
+        live_s = path_distance[advance_mask]
+        previous_target_s = state.insert_distance[advance_mask]
+        target_s = torch.maximum(previous_target_s, live_s)
+        target_s = target_s + max(float(cfg.insert.speed), 0.0) * safe_step_dt
+        min_lookahead = max(float(cfg.insert.min_lookahead), 0.0)
+        max_lookahead = max(min_lookahead, float(cfg.insert.max_lookahead))
+        target_s = torch.maximum(target_s, live_s + min_lookahead)
+        target_s = torch.minimum(target_s, live_s + max_lookahead)
+        target_s = torch.minimum(target_s, world_targets.path_length[advance_mask])
+        state.insert_distance[advance_mask] = target_s
     state.insert_distance[:] = torch.minimum(state.insert_distance, world_targets.path_length)
 
     insert_fraction, target_tip_pos_w, target_tip_quat_w = _current_target_tip_pose(
@@ -542,8 +607,8 @@ def compute_simple_nic_insert_oracle(
     reached_final = (
         (state.phase == int(SimpleNicInsertPhase.INSERT))
         & (insert_fraction.squeeze(1) >= 1.0)
-        & (tip_position_error <= final_threshold)
-        & (final_orientation_error <= insert_orientation_threshold)
+        & (tip_position_error <= cfg.insert.final_position_threshold)
+        & (final_orientation_error <= cfg.insert.orientation_threshold)
     )
     state.phase[reached_final] = int(SimpleNicInsertPhase.HOLD)
     state.hold_steps[state.phase == int(SimpleNicInsertPhase.HOLD)] += 1
@@ -566,28 +631,36 @@ def compute_simple_nic_insert_oracle(
     )
     tcp_position_error = torch.linalg.norm(desired_tcp_pos_w - tcp_pos_w, dim=1)
     tcp_orientation_error = math_utils.quat_error_magnitude(tcp_quat_w, desired_tcp_quat_w)
+    approach_pos_delta = max(float(cfg.approach.tracking.max_linear_speed), 0.0) * safe_step_dt
+    approach_rot_delta = max(float(cfg.approach.tracking.max_angular_speed), 0.0) * safe_step_dt
+    align_pos_delta = max(float(cfg.align.tracking.max_linear_speed), 0.0) * safe_step_dt
+    align_rot_delta = max(float(cfg.align.tracking.max_angular_speed), 0.0) * safe_step_dt
+    insert_pos_delta = max(float(cfg.insert.tracking.max_linear_speed), 0.0) * safe_step_dt
+    insert_rot_delta = max(float(cfg.insert.tracking.max_angular_speed), 0.0) * safe_step_dt
+    current_approach_mask = (state.phase == int(SimpleNicInsertPhase.APPROACH_P)) | (
+        state.phase == int(SimpleNicInsertPhase.APPROACH_P_R)
+    )
     current_align_mask = state.phase == int(SimpleNicInsertPhase.ALIGN)
-    current_insert_mask = state.phase == int(SimpleNicInsertPhase.INSERT)
-    default_pos_delta = torch.full_like(path_distance, max_pos_delta)
+    default_pos_delta = torch.full_like(path_distance, insert_pos_delta)
     per_env_max_pos_delta = torch.where(
-        current_align_mask.unsqueeze(1),
-        torch.full_like(path_distance, align_max_pos_delta),
+        current_approach_mask.unsqueeze(1),
+        torch.full_like(path_distance, approach_pos_delta),
         default_pos_delta,
     )
     per_env_max_pos_delta = torch.where(
-        current_insert_mask.unsqueeze(1),
-        torch.full_like(path_distance, insert_max_pos_delta),
+        current_align_mask.unsqueeze(1),
+        torch.full_like(path_distance, align_pos_delta),
         per_env_max_pos_delta,
     )
-    default_rot_delta = torch.full_like(path_distance, max_rot_delta)
+    default_rot_delta = torch.full_like(path_distance, insert_rot_delta)
     per_env_max_rot_delta = torch.where(
-        current_align_mask.unsqueeze(1),
-        torch.full_like(path_distance, align_max_rot_delta),
+        current_approach_mask.unsqueeze(1),
+        torch.full_like(path_distance, approach_rot_delta),
         default_rot_delta,
     )
     per_env_max_rot_delta = torch.where(
-        current_insert_mask.unsqueeze(1),
-        torch.full_like(path_distance, insert_max_rot_delta),
+        current_align_mask.unsqueeze(1),
+        torch.full_like(path_distance, align_rot_delta),
         per_env_max_rot_delta,
     )
     processed_action = _relative_ik_processed_action(
@@ -597,8 +670,8 @@ def compute_simple_nic_insert_oracle(
         desired_tcp_pos_w,
         desired_tcp_quat_w,
         action_scale,
-        pos_gain=pos_gain,
-        rot_gain=rot_gain,
+        pos_gain=cfg.pos_gain,
+        rot_gain=cfg.rot_gain,
         max_pos_delta=per_env_max_pos_delta,
         max_rot_delta=per_env_max_rot_delta,
     )
@@ -837,7 +910,7 @@ def _relative_ik_processed_action(
     pos_gain: float,
     rot_gain: float,
     max_pos_delta: float | torch.Tensor,
-    max_rot_delta: float,
+    max_rot_delta: float | torch.Tensor,
 ) -> torch.Tensor:
     tcp_pos_b, tcp_quat_b = math_utils.subtract_frame_transforms(
         robot.data.root_pos_w,
