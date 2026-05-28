@@ -8,7 +8,6 @@ when a different concrete asset is assigned to the same role.
 from .base import (
     ASSET_DIR,
     AssetIdentity,
-    AssetPropertySpec,
     AssetRole,
     AssetSpec,
     BodyRoleSpec,
@@ -28,7 +27,6 @@ from .robots import (
     ROBOT_TCP,
     UR5E_ARM,
     UR5E_CABLE_ASSET,
-    UR5E_CABLE_ROBOT,
     RobotAssetSpec,
 )
 from .scene import (
@@ -48,21 +46,16 @@ from .scene import (
 )
 from .targets import (
     NIC_CARD_ASSET,
-    NIC_CARD_TARGET,
     RigidPartAssetSpec,
-    SC_PORT_TARGET,
     SC_PORT_ASSET,
-    TargetAssetSpec,
 )
-from .workcells import AIC_WORKCELL, AIC_WORKCELL_ASSET, TASK_BOARD, TASK_BOARD_ASSET, StaticAssetSpec
+from .workcells import AIC_WORKCELL_ASSET, TASK_BOARD_ASSET, StaticAssetSpec
 
 __all__ = [
     "AIC_PORT_INSERTION_SCENE",
-    "AIC_WORKCELL",
     "AIC_WORKCELL_ASSET",
     "ASSET_DIR",
     "AssetIdentity",
-    "AssetPropertySpec",
     "AssetRole",
     "AssetSpec",
     "BOARD",
@@ -72,7 +65,6 @@ __all__ = [
     "INSERTION_TARGET_SCENE_ASSET",
     "JointGroupSpec",
     "NIC_CARD_ASSET",
-    "NIC_CARD_TARGET",
     "NamedBodySpec",
     "NamedFrameSpec",
     "ROBOT",
@@ -82,7 +74,6 @@ __all__ = [
     "ROBOT_TCP",
     "RigidPartAssetSpec",
     "RobotAssetSpec",
-    "SC_PORT_TARGET",
     "SC_PORT_ASSET",
     "SC_PORT_1",
     "SC_PORT_1_SCENE_ASSET",
@@ -92,12 +83,9 @@ __all__ = [
     "SceneRole",
     "SceneSpec",
     "StaticAssetSpec",
-    "TASK_BOARD",
     "TASK_BOARD_ASSET",
-    "TargetAssetSpec",
     "UR5E_ARM",
     "UR5E_CABLE_ASSET",
-    "UR5E_CABLE_ROBOT",
     "UsdAssetInterface",
     "UsdAssetKind",
     "WORKCELL",

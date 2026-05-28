@@ -115,15 +115,6 @@ class AssetSpec:
 
 
 @dataclass(frozen=True)
-class AssetPropertySpec(AssetSpec):
-    """Compatibility name for asset-level specs.
-
-    Older code used ``AssetPropertySpec`` for the same idea.  Keep the name as
-    an aliasable base while new code can say ``AssetSpec`` directly.
-    """
-
-
-@dataclass(frozen=True)
 class SceneAssetSpec:
     """One named asset instance in an environment scene.
 

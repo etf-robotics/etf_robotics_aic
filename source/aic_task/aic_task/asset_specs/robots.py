@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from .base import (
     AssetIdentity,
-    AssetPropertySpec,
+    AssetSpec,
     BodyRoleSpec,
     JointGroupSpec,
     NamedBodySpec,
@@ -22,7 +22,7 @@ ROBOT_PLUG_CENTER = "plug_center"
 
 
 @dataclass(frozen=True)
-class RobotAssetSpec(AssetPropertySpec):
+class RobotAssetSpec(AssetSpec):
     """Asset-level contract for a robot articulation."""
 
     joint_groups: tuple[JointGroupSpec, ...]
@@ -130,6 +130,3 @@ UR5E_CABLE_ASSET = RobotAssetSpec(
         ),
     ),
 )
-
-# Backward-compatible name while callers migrate to the asset/scene split.
-UR5E_CABLE_ROBOT = UR5E_CABLE_ASSET
