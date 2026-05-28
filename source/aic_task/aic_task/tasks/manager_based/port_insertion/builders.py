@@ -12,6 +12,7 @@ from isaaclab.envs.mdp import (
     joint_pos_rel,
     joint_vel_rel,
     last_action,
+    reset_joints_by_offset,
     time_out,
 )
 from isaaclab.managers import EventTermCfg as EventTerm
@@ -94,7 +95,7 @@ def build_scene_cfg(
     return scene
 
 
-def build_action_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, DifferentialInverseKinematicsActionCfg]:
+def build_action_cfg(assembly: PortInsertionAssemblySpec):
     """Build action terms from ``ControllerSpec`` and ``RobotAssetSpec``."""
 
     assembly.validate()
@@ -116,10 +117,17 @@ def build_action_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, Different
         ),
         scale=controller.scale,
     )
-    return {controller.action_name: action_cfg}
+
+    @configclass
+    class PortInsertionActionsCfg:
+        pass
+
+    actions = PortInsertionActionsCfg()
+    setattr(actions, controller.action_name, action_cfg)
+    return actions
 
 
-def build_command_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, InsertionGoalCommandCfg]:
+def build_command_cfg(assembly: PortInsertionAssemblySpec):
     """Build the episode-level insertion goal command from target/port specs."""
 
     assembly.validate()
@@ -138,7 +146,14 @@ def build_command_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, Insertio
         debug_vis=goal.debug_vis,
     )
     _validate_command_cfg(assembly, command_cfg, port)
-    return {goal.command_name: command_cfg}
+
+    @configclass
+    class PortInsertionCommandsCfg:
+        pass
+
+    commands = PortInsertionCommandsCfg()
+    setattr(commands, goal.command_name, command_cfg)
+    return commands
 
 
 def build_observation_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, ObsGroup]:
@@ -174,7 +189,17 @@ def build_event_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, EventTerm]
     """Build reset events, including layout-owned scene randomization."""
 
     assembly.validate()
+    robot_slot_name = assembly.layout.robot_slot.name
     events = {
+        "reset_robot_joints": EventTerm(
+            func=reset_joints_by_offset,
+            mode="reset",
+            params={
+                "asset_cfg": SceneEntityCfg(robot_slot_name),
+                "position_range": (0.0, 0.0),
+                "velocity_range": (0.0, 0.0),
+            },
+        ),
         "randomize_light": EventTerm(
             func=randomize_dome_light,
             mode="reset",
@@ -183,7 +208,7 @@ def build_event_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, EventTerm]
                 "intensity_range": (1500.0, 3500.0),
                 "color_range": ((0.5, 0.5, 0.5), (1.0, 1.0, 1.0)),
             },
-        )
+        ),
     }
     randomization = assembly.layout.randomization
     if randomization is not None:

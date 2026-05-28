@@ -39,7 +39,7 @@ def randomize_dome_light(
     del env_ids
 
     stage = omni.usd.get_context().get_stage()
-    light_prim = stage.GetPrimAtPath(env.scene[light_scene_name].cfg.prim_path)
+    light_prim = stage.GetPrimAtPath(getattr(env.scene.cfg, light_scene_name).prim_path)
     if not light_prim.IsValid():
         return
 
