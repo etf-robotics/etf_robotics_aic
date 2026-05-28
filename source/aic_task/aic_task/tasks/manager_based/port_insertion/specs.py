@@ -14,6 +14,7 @@ from typing import Literal
 from aic_task.asset_specs import (
     AIC_PORT_INSERTION_LAYOUT,
     NIC_CARD_ASSET,
+    PoseSpec,
     ROBOT_ROLE_TCP,
     SCENE_SLOT_ROBOT,
     SCENE_SLOT_TARGET,
@@ -53,11 +54,7 @@ class InsertionGoalSpec:
     command_name: str
     target_slot: str
     port_name: str
-    target_xz_offset: tuple[float, float]
-    approach_offset_local: tuple[float, float, float]
-    approach_pos_noise_local: tuple[float, float, float]
-    approach_tilt_noise_deg: float
-    approach_twist_noise_deg: float
+    eef_pose_in_port_frame: PoseSpec
     resampling_time_range: tuple[float, float]
     debug_vis: bool = False
 
@@ -130,11 +127,10 @@ NIC_PORT_0_INSERTION_GOAL = InsertionGoalSpec(
     command_name="insertion_goal",
     target_slot=SCENE_SLOT_TARGET,
     port_name="sfp_port_0",
-    target_xz_offset=(0.0, 0.001),
-    approach_offset_local=(0.0, -0.07, 0.0),
-    approach_pos_noise_local=(0.01, 0.0, 0.01),
-    approach_tilt_noise_deg=5.0,
-    approach_twist_noise_deg=10.0,
+    eef_pose_in_port_frame=PoseSpec(
+        pos=(0.0, 0.0, 0.001),
+        rot=(math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0),
+    ),
     resampling_time_range=(1.0e9, 1.0e9 + 1.0),
     debug_vis=False,
 )

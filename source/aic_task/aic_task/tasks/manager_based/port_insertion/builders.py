@@ -25,8 +25,6 @@ from isaaclab.utils import configclass
 
 from aic_task.asset_specs import (
     AssetSpec,
-    AxisRangeSpec,
-    AxisSnapSpec,
     CameraFrameSpec,
     ROBOT_ROLE_EEF,
     RobotAssetSpec,
@@ -39,6 +37,10 @@ from .mdp.commands import InsertionGoalCommandCfg
 from .mdp.events import randomize_board_and_parts, randomize_dome_light
 from .mdp.terminations import InsertionGoalReachedSuccess, InsertionGoalStationaryFailure
 from .specs import PortInsertionAssemblySpec
+
+
+_GROUND_SCENE_NAME = "ground"
+_LIGHT_SCENE_NAME = "light"
 
 
 def build_scene_cfg(
@@ -64,14 +66,22 @@ def build_scene_cfg(
         replicate_physics=replicate_physics,
         filter_collisions=filter_collisions,
     )
-    scene.ground = AssetBaseCfg(
-        prim_path="/World/ground",
-        spawn=sim_utils.GroundPlaneCfg(),
-        init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, -1.05)),
+    setattr(
+        scene,
+        _GROUND_SCENE_NAME,
+        AssetBaseCfg(
+            prim_path="/World/ground",
+            spawn=sim_utils.GroundPlaneCfg(),
+            init_state=AssetBaseCfg.InitialStateCfg(pos=(0.0, 0.0, -1.05)),
+        ),
     )
-    scene.light = AssetBaseCfg(
-        prim_path="/World/light",
-        spawn=sim_utils.DomeLightCfg(color=(0.75, 0.75, 0.75), intensity=2500.0),
+    setattr(
+        scene,
+        _LIGHT_SCENE_NAME,
+        AssetBaseCfg(
+            prim_path="/World/light",
+            spawn=sim_utils.DomeLightCfg(color=(0.75, 0.75, 0.75), intensity=2500.0),
+        ),
     )
 
     setattr(scene, assembly.layout.robot_slot.name, _build_robot_cfg(assembly.layout.robot_slot, assembly.robot))
@@ -120,16 +130,10 @@ def build_command_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, Insertio
         target_scene_name=goal.target_slot,
         target_root_prim=target.usd.root_prim,
         port_name=port.name,
-        port_index=port.index,
-        port_link_path=port.link_path,
         port_seat_frame_path=port.seat_frame_path,
         port_entrance_frame_path=port.entrance_frame_path,
-        insertion_axis_local=port.insertion_axis_local,
-        target_xz_offset=goal.target_xz_offset,
-        approach_offset_local=goal.approach_offset_local,
-        approach_pos_noise_local=goal.approach_pos_noise_local,
-        approach_tilt_noise_deg=goal.approach_tilt_noise_deg,
-        approach_twist_noise_deg=goal.approach_twist_noise_deg,
+        eef_pos_in_port_frame=goal.eef_pose_in_port_frame.pos,
+        eef_quat_in_port_frame=goal.eef_pose_in_port_frame.rot,
         resampling_time_range=goal.resampling_time_range,
         debug_vis=goal.debug_vis,
     )
@@ -175,13 +179,37 @@ def build_event_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, EventTerm]
             func=randomize_dome_light,
             mode="reset",
             params={
+                "light_scene_name": _LIGHT_SCENE_NAME,
                 "intensity_range": (1500.0, 3500.0),
                 "color_range": ((0.5, 0.5, 0.5), (1.0, 1.0, 1.0)),
             },
         )
     }
-    if assembly.layout.randomization is not None:
-        events["randomize_board_and_parts"] = _build_layout_randomization_event(assembly.layout)
+    randomization = assembly.layout.randomization
+    if randomization is not None:
+        board_slot = assembly.layout.slot(randomization.board_slot_name)
+        board_relative_parts = []
+        for part in randomization.board_relative_parts:
+            assembly.layout.slot(part.slot_name)
+            board_relative_parts.append(
+                {
+                    "slot_name": part.slot_name,
+                    "board_local_offset": part.board_local_offset,
+                    "pose_ranges": {axis_range.axis: axis_range.bounds for axis_range in part.pose_ranges},
+                    "snap_steps": {axis_snap.axis: axis_snap.step for axis_snap in part.snap_steps},
+                }
+            )
+        events["randomize_board_and_parts"] = EventTerm(
+            func=randomize_board_and_parts,
+            mode="reset",
+            params={
+                "board_slot_name": randomization.board_slot_name,
+                "board_default_position": board_slot.pose.pos,
+                "board_pose_ranges": {axis_range.axis: axis_range.bounds for axis_range in randomization.board_ranges},
+                "board_relative_parts": board_relative_parts,
+                "sync_usd_xforms": randomization.sync_usd_xforms,
+            },
+        )
     return events
 
 
@@ -326,45 +354,6 @@ def _support_slots(layout: SceneLayoutSpec) -> tuple[SceneSlotSpec, ...]:
     return tuple(slots)
 
 
-def _build_layout_randomization_event(layout: SceneLayoutSpec) -> EventTerm:
-    randomization = layout.randomization
-    if randomization is None:
-        raise ValueError(f"Layout '{layout.name}' does not define randomization.")
-
-    board_slot = layout.slot(randomization.board_slot_name)
-    parts = []
-    for part in randomization.board_relative_parts:
-        layout.slot(part.slot_name)
-        parts.append(
-            {
-                "scene_name": part.slot_name,
-                "offset": part.board_local_offset,
-                "pose_range": _axis_ranges_to_dict(part.pose_ranges),
-                "snap_step": _axis_snaps_to_dict(part.snap_steps),
-            }
-        )
-
-    return EventTerm(
-        func=randomize_board_and_parts,
-        mode="reset",
-        params={
-            "board_scene_name": randomization.board_slot_name,
-            "board_default_pos": board_slot.pose.pos,
-            "board_range": _axis_ranges_to_dict(randomization.board_ranges),
-            "parts": parts,
-            "sync_usd_xforms": randomization.sync_usd_xforms,
-        },
-    )
-
-
-def _axis_ranges_to_dict(ranges: tuple[AxisRangeSpec, ...]) -> dict[str, tuple[float, float]]:
-    return {axis_range.axis: axis_range.bounds for axis_range in ranges}
-
-
-def _axis_snaps_to_dict(snaps: tuple[AxisSnapSpec, ...]) -> dict[str, float]:
-    return {axis_snap.axis: axis_snap.step for axis_snap in snaps}
-
-
 def _validate_command_cfg(
     assembly: PortInsertionAssemblySpec,
     command_cfg: InsertionGoalCommandCfg,
@@ -377,18 +366,18 @@ def _validate_command_cfg(
         )
     if command_cfg.target_root_prim != assembly.target.usd.root_prim:
         raise ValueError("Command target root prim does not match the selected target asset.")
-    if command_cfg.port_name != port.name or command_cfg.port_index != port.index:
+    if command_cfg.port_name != port.name:
         raise ValueError("Command port identity does not match the selected target port.")
-    if command_cfg.port_link_path != port.link_path:
-        raise ValueError("Command port link path does not match the selected target port.")
+    if command_cfg.port_entrance_frame_path is None:
+        raise ValueError("Command port entrance frame path cannot be empty.")
     if command_cfg.port_entrance_frame_path != port.entrance_frame_path:
         raise ValueError("Command port entrance frame path does not match the selected target port.")
     if not command_cfg.port_seat_frame_path:
         raise ValueError("Command port seat frame path cannot be empty.")
     if command_cfg.port_seat_frame_path != port.seat_frame_path:
         raise ValueError("Command port seat frame path does not match the selected target port.")
-    if not any(abs(value) > 0.0 for value in command_cfg.insertion_axis_local):
-        raise ValueError("Command insertion axis cannot be the zero vector.")
+    if not any(abs(value) > 0.0 for value in command_cfg.eef_quat_in_port_frame):
+        raise ValueError("Command EEF orientation cannot be the zero quaternion.")
 
 
 def _validate_scene_slots(assembly: PortInsertionAssemblySpec) -> None:
