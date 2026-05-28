@@ -1,10 +1,9 @@
-"""Shared types for asset specs and scene specs.
+"""Shared primitives for reusable asset and scene-layout specs.
 
-Asset specs describe reusable USD assets: what file they come from and what
-stable interface they expose.  Scene specs describe how one of those assets is
-instantiated in a concrete environment slot.  Keeping those two concepts
-separate lets task code ask for role names such as ``insertion_target`` while
-the concrete USD asset underneath that role can be swapped.
+Asset specs describe facts that stay true wherever a USD asset is used.
+Scene slot specs describe how one asset is instantiated in one layout.
+Keeping those concepts separate lets the port-insertion task swap assets
+without spreading USD paths, body names, or default poses through task code.
 """
 
 from __future__ import annotations
@@ -19,20 +18,24 @@ ASSET_DIR = PACKAGE_DIR / "assets"
 
 
 def asset_path(*parts: str) -> str:
-    """Return an absolute path inside ``aic_task/assets``.
-
-    The spec layer keeps paths centralized so environment configs do not need
-    to know the on-disk folder layout for every concrete asset.
-    """
+    """Return an absolute path inside ``aic_task/assets``."""
 
     return str(ASSET_DIR.joinpath(*parts))
 
 
-AssetRole = Literal["robot", "part", "workcell", "fixture"]
-SceneRole = Literal["robot", "target", "fixture", "workcell", "distractor", "support"]
+AssetRole = Literal["robot", "target", "workcell", "fixture"]
+SceneRole = Literal["robot", "target", "board", "workcell", "auxiliary"]
 UsdAssetKind = Literal["articulation", "rigid_object", "static"]
 Vector3 = tuple[float, float, float]
 Quaternion = tuple[float, float, float, float]
+
+
+@dataclass(frozen=True)
+class PoseSpec:
+    """Position and quaternion in IsaacLab's ``wxyz`` quaternion convention."""
+
+    pos: Vector3 = (0.0, 0.0, 0.0)
+    rot: Quaternion = (1.0, 0.0, 0.0, 0.0)
 
 
 @dataclass(frozen=True)
@@ -45,49 +48,15 @@ class AssetIdentity:
 
 @dataclass(frozen=True)
 class UsdAssetInterface:
-    """USD-level interface exposed by an asset file.
-
-    ``root_prim`` is the authored/default root prim of the USD asset, when the
-    asset has one that task code may need to reason about.
-    """
+    """USD-level interface exposed by an asset file."""
 
     kind: UsdAssetKind
     root_prim: str | None = None
 
 
 @dataclass(frozen=True)
-class NamedBodySpec:
-    """A named rigid/articulation body that other code may reference."""
-
-    name: str
-    purpose: str
-
-
-@dataclass(frozen=True)
-class BodyRoleSpec:
-    """Semantic role resolved to a concrete articulation body.
-
-    Use this when task code wants to ask for a role such as ``eef`` or ``tcp``
-    without hardcoding the body name that currently fulfills that role.
-    """
-
-    name: str
-    body_name: str
-    purpose: str
-
-
-@dataclass(frozen=True)
-class NamedFrameSpec:
-    """A semantic frame or child prim inside the asset USD hierarchy."""
-
-    name: str
-    path: str
-    purpose: str
-
-
-@dataclass(frozen=True)
 class JointGroupSpec:
-    """A named group of joints belonging to an articulation asset."""
+    """A named joint group belonging to a robot articulation."""
 
     name: str
     joint_names: tuple[str, ...]
@@ -95,12 +64,53 @@ class JointGroupSpec:
 
 
 @dataclass(frozen=True)
+class BodyRoleSpec:
+    """Semantic robot role resolved to a concrete articulation body."""
+
+    role: str
+    body_name: str
+    purpose: str = ""
+
+
+@dataclass(frozen=True)
+class CameraFrameSpec:
+    """Camera prim exposed by a robot asset."""
+
+    name: str
+    relative_prim_path: str
+    height: int = 224
+    width: int = 224
+    data_types: tuple[str, ...] = ("rgb",)
+
+
+@dataclass(frozen=True)
+class ActuatorSpec:
+    """Robot actuator defaults for one joint group."""
+
+    name: str
+    joint_group: str
+    effort_limit_sim: float
+    stiffness: float
+    damping: float
+
+
+@dataclass(frozen=True)
+class RobotSpawnSpec:
+    """Robot-specific physics defaults used when building an ArticulationCfg."""
+
+    max_depenetration_velocity: float = 5.0
+    enabled_self_collisions: bool = True
+    solver_position_iteration_count: int = 32
+    solver_velocity_iteration_count: int = 16
+    activate_contact_sensors: bool = False
+
+
+@dataclass(frozen=True)
 class AssetSpec:
     """Reusable asset contract.
 
-    This must stay true no matter where the asset is placed.  Do not put task
-    targets, randomization ranges, rewards, insertion offsets, or selected port
-    choices here; those belong to scene/task specs.
+    This must stay true no matter where the asset is placed. Do not put task
+    targets, randomization ranges, insertion offsets, or selected ports here.
     """
 
     identity: AssetIdentity
@@ -115,35 +125,18 @@ class AssetSpec:
 
 
 @dataclass(frozen=True)
-class SceneAssetSpec:
-    """One named asset instance in an environment scene.
+class SceneSlotSpec:
+    """One named asset instance in an environment layout.
 
     ``name`` is the stable key that scripts should use with ``env.scene[name]``.
-    It should describe the role in this scene, for example ``insertion_target``,
-    not the concrete model file, for example ``nic_card``.
+    It should describe the role in this scene, for example ``target``, not the
+    concrete model family, for example ``nic_card``.
     """
 
     name: str
     role: SceneRole
     asset: AssetSpec
     prim_path: str
-    init_pos: Vector3 = (0.0, 0.0, 0.0)
-    init_rot: Quaternion = (1.0, 0.0, 0.0, 0.0)
-    purpose: str = ""
+    pose: PoseSpec = PoseSpec()
     kinematic: bool = False
-
-
-@dataclass(frozen=True)
-class SceneSpec:
-    """A collection of stable scene slots for one environment layout."""
-
-    name: str
-    assets: tuple[SceneAssetSpec, ...]
-
-    def asset(self, name: str) -> SceneAssetSpec:
-        """Return the scene slot with the requested stable scene name."""
-
-        for scene_asset in self.assets:
-            if scene_asset.name == name:
-                return scene_asset
-        raise KeyError(f"Unknown scene asset '{name}' for scene '{self.name}'.")
+    purpose: str = ""

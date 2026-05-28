@@ -1,24 +1,24 @@
-"""Concrete robot asset specs."""
+"""Robot asset contracts used by AIC tasks."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from .base import (
+    ActuatorSpec,
     AssetIdentity,
     AssetSpec,
     BodyRoleSpec,
+    CameraFrameSpec,
     JointGroupSpec,
-    NamedBodySpec,
-    NamedFrameSpec,
+    RobotSpawnSpec,
     UsdAssetInterface,
     asset_path,
 )
 
 
-ROBOT_EEF = "eef"
-ROBOT_TCP = "tcp"
-ROBOT_PLUG_CENTER = "plug_center"
+ROBOT_ROLE_TCP = "tcp"
+ROBOT_ROLE_EEF = "eef"
 
 
 @dataclass(frozen=True)
@@ -26,44 +26,50 @@ class RobotAssetSpec(AssetSpec):
     """Asset-level contract for a robot articulation."""
 
     joint_groups: tuple[JointGroupSpec, ...]
-    bodies: tuple[NamedBodySpec, ...]
-    frames: tuple[NamedFrameSpec, ...]
-    body_roles: tuple[BodyRoleSpec, ...] = ()
+    body_roles: tuple[BodyRoleSpec, ...]
+    camera_frames: tuple[CameraFrameSpec, ...]
+    actuators: tuple[ActuatorSpec, ...]
+    spawn: RobotSpawnSpec
 
     def joint_group(self, name: str) -> JointGroupSpec:
         """Return a named joint group."""
+
         for group in self.joint_groups:
             if group.name == name:
                 return group
-        raise KeyError(f"Unknown joint group '{name}' for asset '{self.identity.name}'.")
+        raise KeyError(f"Unknown joint group '{name}' for robot asset '{self.name}'.")
 
-    def body(self, name: str) -> NamedBodySpec:
-        """Return a named body contract."""
-        for body in self.bodies:
-            if body.name == name:
-                return body
-        raise KeyError(f"Unknown body '{name}' for asset '{self.identity.name}'.")
-
-    def body_role(self, name: str) -> BodyRoleSpec:
+    def body_role(self, role: str) -> BodyRoleSpec:
         """Return the concrete body currently assigned to a semantic role."""
-        for role in self.body_roles:
-            if role.name == name:
-                return role
-        raise KeyError(f"Unknown body role '{name}' for asset '{self.identity.name}'.")
 
-    def body_name_for_role(self, name: str) -> str:
+        for body_role in self.body_roles:
+            if body_role.role == role:
+                return body_role
+        raise KeyError(f"Unknown body role '{role}' for robot asset '{self.name}'.")
+
+    def body_name_for_role(self, role: str) -> str:
         """Return only the concrete body name for a semantic role."""
-        return self.body_role(name).body_name
 
-    def frame(self, name: str) -> NamedFrameSpec:
-        """Return a named frame contract."""
-        for frame in self.frames:
+        return self.body_role(role).body_name
+
+    def camera_frame(self, name: str) -> CameraFrameSpec:
+        """Return a named camera frame exposed by this robot asset."""
+
+        for frame in self.camera_frames:
             if frame.name == name:
                 return frame
-        raise KeyError(f"Unknown frame '{name}' for asset '{self.identity.name}'.")
+        raise KeyError(f"Unknown camera frame '{name}' for robot asset '{self.name}'.")
+
+    def actuator(self, name: str) -> ActuatorSpec:
+        """Return actuator defaults by actuator name."""
+
+        for actuator in self.actuators:
+            if actuator.name == name:
+                return actuator
+        raise KeyError(f"Unknown actuator '{name}' for robot asset '{self.name}'.")
 
 
-UR5E_ARM = JointGroupSpec(
+UR5E_ARM_JOINT_GROUP = JointGroupSpec(
     name="arm",
     joint_names=(
         "shoulder_pan_joint",
@@ -83,48 +89,51 @@ UR5E_ARM = JointGroupSpec(
     },
 )
 
+UR5E_ARM_ACTUATOR = ActuatorSpec(
+    name="arm",
+    joint_group=UR5E_ARM_JOINT_GROUP.name,
+    effort_limit_sim=87.0,
+    stiffness=2000.0,
+    damping=100.0,
+)
+
 UR5E_CABLE_ASSET = RobotAssetSpec(
     identity=AssetIdentity(name="ur5e_cable", role="robot"),
     usd=UsdAssetInterface(kind="articulation", root_prim="aic_unified_robot"),
     usd_path=asset_path("robots", "ur5e_cable", "aic_unified_robot_cable_sdf.usd"),
-    joint_groups=(UR5E_ARM,),
-    bodies=(
-        NamedBodySpec(name="gripper_tcp", purpose="tool center point used by task controllers"),
-        NamedBodySpec(name="wrist_3_link", purpose="terminal wrist body for IK diagnostics"),
-        NamedBodySpec(name="sfp_tip_link", purpose="physical insertion tip carried by the robot"),
-    ),
+    joint_groups=(UR5E_ARM_JOINT_GROUP,),
     body_roles=(
         BodyRoleSpec(
-            name=ROBOT_EEF,
-            body_name="sfp_tip_link",
-            purpose="task end-effector used for insertion target pose and success checks",
-        ),
-        BodyRoleSpec(
-            name=ROBOT_TCP,
+            role=ROBOT_ROLE_TCP,
             body_name="gripper_tcp",
             purpose="body controlled by the Differential IK action",
         ),
         BodyRoleSpec(
-            name=ROBOT_PLUG_CENTER,
-            body_name="sfp_module_link",
-            purpose="module center body used with the eef body to define the plug axis",
+            role=ROBOT_ROLE_EEF,
+            body_name="sfp_tip_link",
+            purpose="physical insertion tip used for goals and terminations",
         ),
     ),
-    frames=(
-        NamedFrameSpec(
+    camera_frames=(
+        CameraFrameSpec(
             name="center_camera",
-            path="aic_unified_robot/center_camera_optical/center_camera",
-            purpose="center wrist camera optical frame",
+            relative_prim_path="aic_unified_robot/center_camera_optical/center_camera",
         ),
-        NamedFrameSpec(
+        CameraFrameSpec(
             name="left_camera",
-            path="aic_unified_robot/left_camera_optical/left_camera",
-            purpose="left wrist camera optical frame",
+            relative_prim_path="aic_unified_robot/left_camera_optical/left_camera",
         ),
-        NamedFrameSpec(
+        CameraFrameSpec(
             name="right_camera",
-            path="aic_unified_robot/right_camera_optical/right_camera",
-            purpose="right wrist camera optical frame",
+            relative_prim_path="aic_unified_robot/right_camera_optical/right_camera",
         ),
+    ),
+    actuators=(UR5E_ARM_ACTUATOR,),
+    spawn=RobotSpawnSpec(
+        max_depenetration_velocity=5.0,
+        enabled_self_collisions=True,
+        solver_position_iteration_count=32,
+        solver_velocity_iteration_count=16,
+        activate_contact_sensors=False,
     ),
 )
