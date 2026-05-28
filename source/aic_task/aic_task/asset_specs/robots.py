@@ -91,9 +91,7 @@ UR5E_CABLE_ASSET = RobotAssetSpec(
     bodies=(
         NamedBodySpec(name="gripper_tcp", purpose="tool center point used by task controllers"),
         NamedBodySpec(name="wrist_3_link", purpose="terminal wrist body for IK diagnostics"),
-        NamedBodySpec(name="sfp_module_link", purpose="rigid body at the SFP module center"),
         NamedBodySpec(name="sfp_tip_link", purpose="physical insertion tip carried by the robot"),
-        NamedBodySpec(name="sfp_module_visual", purpose="inserted SFP module body"),
     ),
     body_roles=(
         BodyRoleSpec(
