@@ -6,20 +6,38 @@ import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.controllers.differential_ik_cfg import DifferentialIKControllerCfg
-from isaaclab.envs.mdp import DifferentialInverseKinematicsActionCfg
+from isaaclab.envs.mdp import (
+    DifferentialInverseKinematicsActionCfg,
+    generated_commands,
+    joint_pos_rel,
+    joint_vel_rel,
+    last_action,
+    time_out,
+)
+from isaaclab.managers import EventTermCfg as EventTerm
+from isaaclab.managers import ObservationGroupCfg as ObsGroup
+from isaaclab.managers import ObservationTermCfg as ObsTerm
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import TiledCameraCfg
 from isaaclab.utils import configclass
 
 from aic_task.asset_specs import (
     AssetSpec,
+    AxisRangeSpec,
+    AxisSnapSpec,
     CameraFrameSpec,
+    ROBOT_ROLE_EEF,
     RobotAssetSpec,
+    SceneLayoutSpec,
     SceneSlotSpec,
     TargetPortSpec,
 )
 
 from .mdp.commands import InsertionGoalCommandCfg
+from .mdp.events import randomize_board_and_parts, randomize_dome_light
+from .mdp.terminations import InsertionGoalReachedSuccess, InsertionGoalStationaryFailure
 from .specs import PortInsertionAssemblySpec
 
 
@@ -34,6 +52,7 @@ def build_scene_cfg(
     """Build the scene cfg for the selected robot, target, and layout."""
 
     assembly.validate()
+    _validate_scene_slots(assembly)
 
     @configclass
     class PortInsertionSceneCfg(InteractiveSceneCfg):
@@ -56,8 +75,9 @@ def build_scene_cfg(
     )
 
     setattr(scene, assembly.layout.robot_slot.name, _build_robot_cfg(assembly.layout.robot_slot, assembly.robot))
-    for slot in _non_robot_slots(assembly):
-        setattr(scene, slot.name, _build_asset_cfg(slot))
+    for slot in _support_slots(assembly.layout):
+        setattr(scene, slot.name, _build_asset_cfg(slot, slot.asset))
+    setattr(scene, assembly.layout.target_slot.name, _build_asset_cfg(assembly.layout.target_slot, assembly.target))
     for camera in assembly.robot.camera_frames:
         setattr(scene, camera.name, _build_camera_cfg(assembly.layout.robot_slot, camera))
 
@@ -86,7 +106,7 @@ def build_action_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, Different
         ),
         scale=controller.scale,
     )
-    return {"arm_action": action_cfg}
+    return {controller.action_name: action_cfg}
 
 
 def build_command_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, InsertionGoalCommandCfg]:
@@ -117,6 +137,95 @@ def build_command_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, Insertio
     return {goal.command_name: command_cfg}
 
 
+def build_observation_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, ObsGroup]:
+    """Build the minimal policy observation group for the insertion task."""
+
+    assembly.validate()
+    robot_name = assembly.layout.robot_slot.name
+    joint_names = list(assembly.robot.joint_group(assembly.controller.joint_group).joint_names)
+    command_name = assembly.goal.command_name
+    action_name = assembly.controller.action_name
+
+    @configclass
+    class PolicyCfg(ObsGroup):
+        joint_pos = ObsTerm(
+            func=joint_pos_rel,
+            params={"asset_cfg": SceneEntityCfg(robot_name, joint_names=joint_names)},
+        )
+        joint_vel = ObsTerm(
+            func=joint_vel_rel,
+            params={"asset_cfg": SceneEntityCfg(robot_name, joint_names=joint_names)},
+        )
+        actions = ObsTerm(func=last_action, params={"action_name": action_name})
+        insertion_goal = ObsTerm(func=generated_commands, params={"command_name": command_name})
+
+        def __post_init__(self) -> None:
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
+    return {"policy": PolicyCfg()}
+
+
+def build_event_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, EventTerm]:
+    """Build reset events, including layout-owned scene randomization."""
+
+    assembly.validate()
+    events = {
+        "randomize_light": EventTerm(
+            func=randomize_dome_light,
+            mode="reset",
+            params={
+                "intensity_range": (1500.0, 3500.0),
+                "color_range": ((0.5, 0.5, 0.5), (1.0, 1.0, 1.0)),
+            },
+        )
+    }
+    if assembly.layout.randomization is not None:
+        events["randomize_board_and_parts"] = _build_layout_randomization_event(assembly.layout)
+    return events
+
+
+def build_termination_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, DoneTerm]:
+    """Build command-aware success, stationary failure, and timeout terms."""
+
+    assembly.validate()
+    termination = assembly.termination
+    eef_body = assembly.robot.body_name_for_role(ROBOT_ROLE_EEF)
+    robot_cfg = SceneEntityCfg(assembly.layout.robot_slot.name, body_names=eef_body)
+
+    return {
+        "success": DoneTerm(
+            func=InsertionGoalReachedSuccess,
+            params={
+                "asset_cfg": robot_cfg,
+                "command_name": assembly.goal.command_name,
+                "tip_body": eef_body,
+                "position_threshold": termination.success_position_threshold,
+                "orientation_threshold": termination.success_orientation_threshold_rad,
+                "required_seconds": termination.success_required_seconds,
+            },
+        ),
+        "failed_stationary": DoneTerm(
+            func=InsertionGoalStationaryFailure,
+            params={
+                "asset_cfg": robot_cfg,
+                "command_name": assembly.goal.command_name,
+                "tip_body": eef_body,
+                "movement_threshold": termination.stationary_movement_threshold,
+                "success_position_threshold": termination.stationary_success_position_threshold,
+                "required_seconds": termination.stationary_required_seconds,
+            },
+        ),
+        "time_out": DoneTerm(func=time_out, time_out=True),
+    }
+
+
+def build_empty_reward_cfg() -> dict:
+    """Return an intentionally empty reward manager cfg."""
+
+    return {}
+
+
 def _build_robot_cfg(slot: SceneSlotSpec, robot: RobotAssetSpec) -> ArticulationCfg:
     spawn = robot.spawn
     return ArticulationCfg(
@@ -142,21 +251,21 @@ def _build_robot_cfg(slot: SceneSlotSpec, robot: RobotAssetSpec) -> Articulation
     )
 
 
-def _build_asset_cfg(slot: SceneSlotSpec) -> AssetBaseCfg | RigidObjectCfg:
-    spawn = _usd_file_cfg(slot.asset, kinematic_enabled=slot.kinematic)
-    if slot.asset.usd.kind == "static":
+def _build_asset_cfg(slot: SceneSlotSpec, asset: AssetSpec) -> AssetBaseCfg | RigidObjectCfg:
+    spawn = _usd_file_cfg(asset, kinematic_enabled=slot.kinematic)
+    if asset.usd.kind == "static":
         return AssetBaseCfg(
             prim_path=slot.prim_path,
             spawn=spawn,
             init_state=AssetBaseCfg.InitialStateCfg(pos=slot.pose.pos, rot=slot.pose.rot),
         )
-    if slot.asset.usd.kind == "rigid_object":
+    if asset.usd.kind == "rigid_object":
         return RigidObjectCfg(
             prim_path=slot.prim_path,
             spawn=spawn,
             init_state=RigidObjectCfg.InitialStateCfg(pos=slot.pose.pos, rot=slot.pose.rot),
         )
-    raise ValueError(f"Scene slot '{slot.name}' is not a passive asset: {slot.asset.usd.kind}")
+    raise ValueError(f"Scene slot '{slot.name}' is not a passive asset: {asset.usd.kind}")
 
 
 def _usd_file_cfg(asset: AssetSpec, *, kinematic_enabled: bool) -> sim_utils.UsdFileCfg:
@@ -207,8 +316,53 @@ def _robot_actuator_cfgs(robot: RobotAssetSpec) -> dict[str, ImplicitActuatorCfg
     return cfgs
 
 
-def _non_robot_slots(assembly: PortInsertionAssemblySpec) -> tuple[SceneSlotSpec, ...]:
-    return tuple(slot for slot in assembly.layout.all_slots() if slot.name != assembly.layout.robot_slot.name)
+def _support_slots(layout: SceneLayoutSpec) -> tuple[SceneSlotSpec, ...]:
+    slots = []
+    if layout.workcell_slot is not None:
+        slots.append(layout.workcell_slot)
+    if layout.board_slot is not None:
+        slots.append(layout.board_slot)
+    slots.extend(layout.auxiliary_slots)
+    return tuple(slots)
+
+
+def _build_layout_randomization_event(layout: SceneLayoutSpec) -> EventTerm:
+    randomization = layout.randomization
+    if randomization is None:
+        raise ValueError(f"Layout '{layout.name}' does not define randomization.")
+
+    board_slot = layout.slot(randomization.board_slot_name)
+    parts = []
+    for part in randomization.board_relative_parts:
+        layout.slot(part.slot_name)
+        parts.append(
+            {
+                "scene_name": part.slot_name,
+                "offset": part.board_local_offset,
+                "pose_range": _axis_ranges_to_dict(part.pose_ranges),
+                "snap_step": _axis_snaps_to_dict(part.snap_steps),
+            }
+        )
+
+    return EventTerm(
+        func=randomize_board_and_parts,
+        mode="reset",
+        params={
+            "board_scene_name": randomization.board_slot_name,
+            "board_default_pos": board_slot.pose.pos,
+            "board_range": _axis_ranges_to_dict(randomization.board_ranges),
+            "parts": parts,
+            "sync_usd_xforms": randomization.sync_usd_xforms,
+        },
+    )
+
+
+def _axis_ranges_to_dict(ranges: tuple[AxisRangeSpec, ...]) -> dict[str, tuple[float, float]]:
+    return {axis_range.axis: axis_range.bounds for axis_range in ranges}
+
+
+def _axis_snaps_to_dict(snaps: tuple[AxisSnapSpec, ...]) -> dict[str, float]:
+    return {axis_snap.axis: axis_snap.step for axis_snap in snaps}
 
 
 def _validate_command_cfg(
@@ -225,14 +379,38 @@ def _validate_command_cfg(
         raise ValueError("Command target root prim does not match the selected target asset.")
     if command_cfg.port_name != port.name or command_cfg.port_index != port.index:
         raise ValueError("Command port identity does not match the selected target port.")
+    if command_cfg.port_link_path != port.link_path:
+        raise ValueError("Command port link path does not match the selected target port.")
+    if command_cfg.port_entrance_frame_path != port.entrance_frame_path:
+        raise ValueError("Command port entrance frame path does not match the selected target port.")
     if not command_cfg.port_seat_frame_path:
         raise ValueError("Command port seat frame path cannot be empty.")
+    if command_cfg.port_seat_frame_path != port.seat_frame_path:
+        raise ValueError("Command port seat frame path does not match the selected target port.")
     if not any(abs(value) > 0.0 for value in command_cfg.insertion_axis_local):
         raise ValueError("Command insertion axis cannot be the zero vector.")
+
+
+def _validate_scene_slots(assembly: PortInsertionAssemblySpec) -> None:
+    if assembly.layout.robot_slot.role != "robot":
+        raise ValueError(f"Robot slot '{assembly.layout.robot_slot.name}' must have role 'robot'.")
+    if assembly.layout.target_slot.role != "target":
+        raise ValueError(f"Target slot '{assembly.layout.target_slot.name}' must have role 'target'.")
+    if assembly.robot.usd.kind != "articulation":
+        raise ValueError(f"Selected robot asset '{assembly.robot.name}' must be an articulation.")
+    if assembly.target.usd.kind != "rigid_object":
+        raise ValueError(f"Selected target asset '{assembly.target.name}' must be a rigid object.")
+    for slot in _support_slots(assembly.layout):
+        if slot.asset.usd.kind == "articulation":
+            raise ValueError(f"Support slot '{slot.name}' cannot contain an articulation asset.")
 
 
 __all__ = [
     "build_action_cfg",
     "build_command_cfg",
+    "build_empty_reward_cfg",
+    "build_event_cfg",
+    "build_observation_cfg",
     "build_scene_cfg",
+    "build_termination_cfg",
 ]

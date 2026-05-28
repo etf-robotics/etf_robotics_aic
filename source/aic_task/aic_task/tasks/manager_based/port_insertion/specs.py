@@ -34,6 +34,7 @@ class ControllerSpec:
     """Action/controller assumptions for one robot slot in the task layout."""
 
     name: str
+    action_name: str
     action_type: ActionType
     robot_slot: str
     joint_group: str
@@ -113,6 +114,7 @@ class PortInsertionAssemblySpec:
 
 UR5E_DIFF_IK_CONTROLLER = ControllerSpec(
     name="ur5e_diff_ik_tcp",
+    action_name="arm_action",
     action_type="diff_ik",
     robot_slot=SCENE_SLOT_ROBOT,
     joint_group="arm",
