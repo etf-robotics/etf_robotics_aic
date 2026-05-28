@@ -71,7 +71,7 @@ Full directory map, per-module role, and dependency direction:
 | Add a new task | [`../docs/08_adding_a_new_task.md`](../docs/08_adding_a_new_task.md) *(later phase)* |
 | Modify the existing task | [`../docs/09_modifying_existing_task.md`](../docs/09_modifying_existing_task.md) *(later phase)* |
 | Change an asset's body roles, joints, or USD path | [`asset_specs/README.md`](asset_specs/README.md) |
-| Wire a new controller / action term | [`tasks/manager_based/port_insertion/builders.py`](tasks/manager_based/port_insertion/builders.py) — see [`../../../docs/DIFFIK_GOAL_DRIVING_NOTES.md`](../../../docs/DIFFIK_GOAL_DRIVING_NOTES.md) for the DiffIK contract |
+| Wire a new controller / action term | [`tasks/manager_based/port_insertion/builders.py`](tasks/manager_based/port_insertion/builders.py) — see [`../docs/06_diff_ik_contract.md`](../docs/06_diff_ik_contract.md) for the DiffIK contract |
 
 ## What this package deliberately does **not** contain
 

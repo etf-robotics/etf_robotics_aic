@@ -58,4 +58,4 @@ This README is just a directory index.
 
 1. [03_port_insertion_overview.md](../../../../docs/03_port_insertion_overview.md) — the full behavioral spec.
 2. [`../../../asset_specs/README.md`](../../../asset_specs/README.md) — slot/role/body conventions you'll need to keep consistent.
-3. [DIFFIK_GOAL_DRIVING_NOTES.md](../../../../../../docs/DIFFIK_GOAL_DRIVING_NOTES.md) — the DiffIK action contract; required reading if you touch `build_action_cfg` or anything that emits actions.
+3. [06_diff_ik_contract.md](../../../../docs/06_diff_ik_contract.md) — the DiffIK action contract; required reading if you touch `build_action_cfg` or anything that emits actions.

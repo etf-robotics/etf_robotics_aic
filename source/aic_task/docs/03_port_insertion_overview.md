@@ -7,7 +7,7 @@ related:
   - 02_gym_registration.md
   - ../aic_task/tasks/manager_based/port_insertion/README.md
   - ../aic_task/asset_specs/README.md
-  - ../../../docs/DIFFIK_GOAL_DRIVING_NOTES.md
+  - 06_diff_ik_contract.md
 ---
 
 # 03 · `AIC-Port-Insertion-v0` Overview
@@ -97,7 +97,7 @@ Concretely this means:
 
 > Subtle but important: errors must be computed in the robot root frame
 > before being sent as actions. See
-> [DIFFIK_GOAL_DRIVING_NOTES.md](../../../docs/DIFFIK_GOAL_DRIVING_NOTES.md)
+> [06_diff_ik_contract.md](06_diff_ik_contract.md)
 > for the full contract and the world-vs-root pitfall.
 
 The action does **not** include a gripper command — the SFP plug is rigidly

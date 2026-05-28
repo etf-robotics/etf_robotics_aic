@@ -1,3 +1,13 @@
+---
+scope: reusable asset / scene-slot / layout contracts; the bottom layer of the assembly pattern
+audience: AI agents working in this repo
+last_verified_commit: 8d9a44e
+related:
+  - ../../docs/01_package_structure.md
+  - ../../docs/04_assembly_pattern.md
+  - ../../docs/03_port_insertion_overview.md
+---
+
 # Asset Specs
 
 This package keeps reusable asset facts separate from task assembly and IsaacLab
@@ -113,3 +123,14 @@ kinematic flags, auxiliary assets, and layout randomization.
 
 Task specs should choose an assembly from these pieces. Builders should convert
 the specs into IsaacLab config objects.
+
+## Related docs
+
+- [01_package_structure.md](../../docs/01_package_structure.md) — where this
+  package sits in the broader directory map.
+- [04_assembly_pattern.md](../../docs/04_assembly_pattern.md) — design
+  rationale for the asset-spec → spec → builder → env-cfg layering, and the
+  rules that keep it intact.
+- [03_port_insertion_overview.md](../../docs/03_port_insertion_overview.md) —
+  the concrete task that consumes `AIC_PORT_INSERTION_LAYOUT`,
+  `UR5E_CABLE_ASSET`, `NIC_CARD_ASSET`, and friends.
