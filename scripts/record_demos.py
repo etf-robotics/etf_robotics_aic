@@ -85,13 +85,15 @@ from isaaclab.devices import (
 )
 from isaaclab.devices.teleop_device_factory import create_teleop_device
 from isaaclab.envs import DirectRLEnvCfg, ManagerBasedRLEnvCfg
-from isaaclab.envs.mdp.recorders.recorders_cfg import ActionStateRecorderManagerCfg
 from isaaclab.managers import DatasetExportMode
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
 import aic_task.tasks  # noqa: F401
+from aic_task.tasks.manager_based.port_insertion.mdp.recorders import (
+    GroupedActionStateRecorderManagerCfg,
+)
 from aic_task.utils.live_camera_stream import attach_default_camera_stream
 
 logger = logging.getLogger(__name__)
@@ -154,7 +156,7 @@ def main() -> None:
     env_cfg.observations.policy.concatenate_terms = False
 
     # Configure recorder
-    env_cfg.recorders = ActionStateRecorderManagerCfg()
+    env_cfg.recorders = GroupedActionStateRecorderManagerCfg()
     env_cfg.recorders.dataset_export_dir_path = output_dir
     env_cfg.recorders.dataset_filename = output_file_name
     env_cfg.recorders.dataset_export_mode = DatasetExportMode.EXPORT_SUCCEEDED_ONLY

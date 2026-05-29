@@ -8,7 +8,7 @@ from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.controllers.differential_ik_cfg import DifferentialIKControllerCfg
 from isaaclab.envs.mdp import (
     DifferentialInverseKinematicsActionCfg,
-    generated_commands,
+    image,
     joint_pos_rel,
     joint_vel_rel,
     last_action,
@@ -36,6 +36,14 @@ from aic_task.asset_specs import (
 
 from .mdp.commands import InsertionGoalCommandCfg
 from .mdp.events import randomize_board_and_parts, randomize_dome_light
+from .mdp.observations import (
+    body_pose_b,
+    body_vel_b,
+    insertion_fraction,
+    insertion_goal_b,
+    seat_pos_err_b,
+    seat_quat_delta_b,
+)
 from .mdp.terminations import InsertionGoalReachedSuccess, InsertionGoalStationaryFailure
 from .specs import PortInsertionAssemblySpec
 
@@ -157,32 +165,106 @@ def build_command_cfg(assembly: PortInsertionAssemblySpec):
 
 
 def build_observation_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, ObsGroup]:
-    """Build the minimal policy observation group for the insertion task."""
+    """Build the policy (proprio + vision + last action) and cheatcode obs groups.
+
+    ``policy`` is what the BC policy sees at inference: low-dim proprio,
+    body-frame TCP/EEF pose+velocity, three RGB cameras (uint8, normalize off),
+    and the last action. ``cheatcode`` carries privileged scene state
+    (body-frame goal, insertion progress, body-frame errors to the seat) for
+    BC-dataset analysis and asymmetric critics. Both groups disable
+    concatenation because the policy mixes heterogeneous shapes (images +
+    low-dim) and the recorder writes each term as its own HDF5 dataset.
+    """
 
     assembly.validate()
     robot_name = assembly.layout.robot_slot.name
     joint_names = list(assembly.robot.joint_group(assembly.controller.joint_group).joint_names)
-    command_name = assembly.goal.command_name
+    tcp_body = assembly.robot.body_name_for_role(assembly.controller.controlled_body_role)
+    eef_body = assembly.robot.body_name_for_role(ROBOT_ROLE_EEF)
     action_name = assembly.controller.action_name
+    command_name = assembly.goal.command_name
+    lateral_threshold_m = assembly.observation.insertion_lateral_threshold_m
+
+    joint_cfg = SceneEntityCfg(robot_name, joint_names=joint_names)
+    tcp_cfg = SceneEntityCfg(robot_name, body_names=[tcp_body])
+    eef_cfg = SceneEntityCfg(robot_name, body_names=[eef_body])
+    robot_root_cfg = SceneEntityCfg(robot_name)
 
     @configclass
     class PolicyCfg(ObsGroup):
-        joint_pos = ObsTerm(
-            func=joint_pos_rel,
-            params={"asset_cfg": SceneEntityCfg(robot_name, joint_names=joint_names)},
+        joint_pos = ObsTerm(func=joint_pos_rel, params={"asset_cfg": joint_cfg})
+        joint_vel = ObsTerm(func=joint_vel_rel, params={"asset_cfg": joint_cfg})
+        tcp_pose = ObsTerm(func=body_pose_b, params={"asset_cfg": tcp_cfg})
+        eef_pose = ObsTerm(func=body_pose_b, params={"asset_cfg": eef_cfg})
+        tcp_vel = ObsTerm(func=body_vel_b, params={"asset_cfg": tcp_cfg})
+        eef_vel = ObsTerm(func=body_vel_b, params={"asset_cfg": eef_cfg})
+        center_camera_rgb = ObsTerm(
+            func=image,
+            params={
+                "sensor_cfg": SceneEntityCfg("center_camera"),
+                "data_type": "rgb",
+                "normalize": False,
+            },
         )
-        joint_vel = ObsTerm(
-            func=joint_vel_rel,
-            params={"asset_cfg": SceneEntityCfg(robot_name, joint_names=joint_names)},
+        left_camera_rgb = ObsTerm(
+            func=image,
+            params={
+                "sensor_cfg": SceneEntityCfg("left_camera"),
+                "data_type": "rgb",
+                "normalize": False,
+            },
+        )
+        right_camera_rgb = ObsTerm(
+            func=image,
+            params={
+                "sensor_cfg": SceneEntityCfg("right_camera"),
+                "data_type": "rgb",
+                "normalize": False,
+            },
         )
         actions = ObsTerm(func=last_action, params={"action_name": action_name})
-        insertion_goal = ObsTerm(func=generated_commands, params={"command_name": command_name})
 
         def __post_init__(self) -> None:
             self.enable_corruption = False
-            self.concatenate_terms = True
+            self.concatenate_terms = False
 
-    return {"policy": PolicyCfg()}
+    @configclass
+    class CheatcodeCfg(ObsGroup):
+        insertion_goal = ObsTerm(
+            func=insertion_goal_b,
+            params={"command_name": command_name, "asset_cfg": robot_root_cfg},
+        )
+        insertion_fraction = ObsTerm(
+            func=insertion_fraction,
+            params={
+                "command_name": command_name,
+                "asset_cfg": eef_cfg,
+                "body_name": eef_body,
+                "lateral_threshold_m": lateral_threshold_m,
+            },
+        )
+        seat_pos_err = ObsTerm(
+            func=seat_pos_err_b,
+            params={
+                "command_name": command_name,
+                "asset_cfg": eef_cfg,
+                "body_name": eef_body,
+            },
+        )
+        seat_rot_err = ObsTerm(
+            func=seat_quat_delta_b,
+            params={
+                "command_name": command_name,
+                "asset_cfg": eef_cfg,
+                "body_name": eef_body,
+            },
+        )
+
+        def __post_init__(self) -> None:
+            self.enable_corruption = False
+            self.concatenate_terms = False
+
+    return {"policy": PolicyCfg(), "cheatcode": CheatcodeCfg()}
 
 
 def build_event_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, EventTerm]:

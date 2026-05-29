@@ -72,6 +72,13 @@ class PortInsertionTerminationSpec:
 
 
 @dataclass(frozen=True)
+class PortInsertionObservationSpec:
+    """Constants consumed by the task's custom observation terms."""
+
+    insertion_lateral_threshold_m: float
+
+
+@dataclass(frozen=True)
 class PortInsertionAssemblySpec:
     """Complete task assembly selected by ``PortInsertionEnvCfg``."""
 
@@ -82,6 +89,7 @@ class PortInsertionAssemblySpec:
     controller: ControllerSpec
     goal: InsertionGoalSpec
     termination: PortInsertionTerminationSpec
+    observation: PortInsertionObservationSpec
 
     def selected_port(self) -> TargetPortSpec:
         """Return the target port selected by the insertion goal."""
@@ -144,6 +152,10 @@ AIC_PORT_INSERTION_TERMINATION = PortInsertionTerminationSpec(
     stationary_required_seconds=1.0,
 )
 
+AIC_PORT_INSERTION_OBSERVATION = PortInsertionObservationSpec(
+    insertion_lateral_threshold_m=0.002,
+)
+
 AIC_PORT_INSERTION_ASSEMBLY = PortInsertionAssemblySpec(
     name="aic_port_insertion",
     robot=UR5E_CABLE_ASSET,
@@ -152,17 +164,20 @@ AIC_PORT_INSERTION_ASSEMBLY = PortInsertionAssemblySpec(
     controller=UR5E_DIFF_IK_CONTROLLER,
     goal=NIC_PORT_0_INSERTION_GOAL,
     termination=AIC_PORT_INSERTION_TERMINATION,
+    observation=AIC_PORT_INSERTION_OBSERVATION,
 )
 AIC_PORT_INSERTION_ASSEMBLY.validate()
 
 
 __all__ = [
     "AIC_PORT_INSERTION_ASSEMBLY",
+    "AIC_PORT_INSERTION_OBSERVATION",
     "AIC_PORT_INSERTION_TERMINATION",
     "ControllerSpec",
     "InsertionGoalSpec",
     "NIC_PORT_0_INSERTION_GOAL",
     "PortInsertionAssemblySpec",
+    "PortInsertionObservationSpec",
     "PortInsertionTerminationSpec",
     "UR5E_DIFF_IK_CONTROLLER",
 ]
