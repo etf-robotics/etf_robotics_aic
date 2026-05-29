@@ -1,7 +1,7 @@
 ---
 scope: operational walkthrough for common edits to AIC-Port-Insertion-v0; one entry per cheat-sheet row, each pointing at the single file to edit
 audience: AI agents working in this repo
-last_verified_commit: cfb23ef
+last_verified_commit: aaaa911
 related:
   - 03_port_insertion_overview.md
   - 04_assembly_pattern.md
@@ -20,7 +20,7 @@ Workflow for any change you find here:
 1. Find the row that matches your intent.
 2. Open the named file and edit only that field / function.
 3. The assembly's `.validate()` call at
-   [specs.py:156](../aic_task/tasks/manager_based/port_insertion/specs.py#L156)
+   [specs.py:169](../aic_task/tasks/manager_based/port_insertion/specs.py#L169)
    re-runs on the next `import aic_task` and catches most cross-spec
    mismatches before any sim starts.
 
@@ -44,7 +44,7 @@ Cheat-sheet row: *Success / failure thresholds → `PortInsertionTerminationSpec
 Goal: require ≤ 2 mm position error (currently 3 mm).
 
 Edit
-[specs.py:138](../aic_task/tasks/manager_based/port_insertion/specs.py#L138):
+[specs.py:146](../aic_task/tasks/manager_based/port_insertion/specs.py#L146):
 
 ```diff
  AIC_PORT_INSERTION_TERMINATION = PortInsertionTerminationSpec(
@@ -60,7 +60,7 @@ Edit
 
 Why here: thresholds are pure numbers per assembly. The builder copies
 them onto `DoneTerm.params` at
-[builders.py:256](../aic_task/tasks/manager_based/port_insertion/builders.py#L256);
+[builders.py:338](../aic_task/tasks/manager_based/port_insertion/builders.py#L338);
 the termination term reads them from `params` and never imports the
 spec. Detail in
 [05_mdp_terms.md](05_mdp_terms.md#insertiongoalreachedsuccess).
@@ -88,7 +88,7 @@ Cheat-sheet row: *DiffIK scale, IK method, controlled body → `UR5E_DIFF_IK_CON
 Goal: shrink the per-step XYZ cap from 15 mm to 10 mm.
 
 Edit
-[specs.py:112](../aic_task/tasks/manager_based/port_insertion/specs.py#L112):
+[specs.py:120](../aic_task/tasks/manager_based/port_insertion/specs.py#L120):
 
 ```diff
  UR5E_DIFF_IK_CONTROLLER = ControllerSpec(
@@ -103,7 +103,7 @@ Edit
 
 Why here: `build_action_cfg` reads the spec and constructs
 `DifferentialInverseKinematicsActionCfg(scale=controller.scale, ...)` at
-[builders.py:118](../aic_task/tasks/manager_based/port_insertion/builders.py#L118).
+[builders.py:126](../aic_task/tasks/manager_based/port_insertion/builders.py#L126).
 The IsaacLab type lives there; the *value* lives in the spec.
 
 After the edit, downstream code that emits actions (e.g. scripted
@@ -127,11 +127,11 @@ at the top of `specs.py`.) The actual body name comes from
 which today returns `"gripper_tcp"` / `"sfp_tip_link"` for TCP / EEF
 respectively. You do not edit `builders.py`; it reads the role and asks
 the robot spec for the body name at
-[builders.py:107](../aic_task/tasks/manager_based/port_insertion/builders.py#L107).
+[builders.py:115](../aic_task/tasks/manager_based/port_insertion/builders.py#L115).
 
 Heads up: the success / stationary terminations still target the **EEF
 body** (`tip_body = robot.body_name_for_role(ROBOT_ROLE_EEF)`, set in
-[builders.py:246](../aic_task/tasks/manager_based/port_insertion/builders.py#L246)).
+[builders.py:328](../aic_task/tasks/manager_based/port_insertion/builders.py#L328)).
 That's by design — the EEF is what physically must reach the seat. Don't
 chase the role swap into the termination builder.
 
@@ -216,28 +216,43 @@ Cheat-sheet row: *Observation group composition → `build_observation_cfg` in `
 
 Goal: add `joint_torque` to the policy observation group.
 
-Edit
-[builders.py:159](../aic_task/tasks/manager_based/port_insertion/builders.py#L159).
-The function builds a single `ObservationGroupCfg` (named `policy`) by
-declaring `ObsTerm` fields inside a local `@configclass`. Append a new
-`ObsTerm`:
+Edit `build_observation_cfg` in
+[builders.py](../aic_task/tasks/manager_based/port_insertion/builders.py).
+The function builds two `ObservationGroupCfg` classes inline (`policy`
+and `cheatcode`) by declaring `ObsTerm` fields inside local
+`@configclass` blocks. To add a low-dim observation that the policy
+should see at inference, append an `ObsTerm` to `PolicyCfg`:
 
 ```diff
      @configclass
      class PolicyCfg(ObsGroup):
-         joint_pos = ObsTerm(...)
-         joint_vel = ObsTerm(...)
+         joint_pos = ObsTerm(func=joint_pos_rel, params={"asset_cfg": joint_cfg})
+         joint_vel = ObsTerm(func=joint_vel_rel, params={"asset_cfg": joint_cfg})
+         tcp_pose = ObsTerm(func=body_pose_b, params={"asset_cfg": tcp_cfg})
+         eef_pose = ObsTerm(func=body_pose_b, params={"asset_cfg": eef_cfg})
+         tcp_vel = ObsTerm(func=body_vel_b, params={"asset_cfg": tcp_cfg})
+         eef_vel = ObsTerm(func=body_vel_b, params={"asset_cfg": eef_cfg})
+         center_camera_rgb = ObsTerm(func=image, params={...})
+         left_camera_rgb = ObsTerm(func=image, params={...})
+         right_camera_rgb = ObsTerm(func=image, params={...})
          actions = ObsTerm(func=last_action, params={"action_name": action_name})
-         insertion_goal = ObsTerm(func=generated_commands, params={"command_name": command_name})
 +        joint_torque = ObsTerm(
 +            func=joint_torque_rel,  # add the import at the top of builders.py
-+            params={"asset_cfg": SceneEntityCfg(robot_name, joint_names=joint_names)},
++            params={"asset_cfg": joint_cfg},
 +        )
 
          def __post_init__(self) -> None:
              self.enable_corruption = False
-             self.concatenate_terms = True
+             self.concatenate_terms = False
 ```
+
+Privileged observations (something the policy must NOT see at inference
+but you want recorded for analysis / asymmetric critics) go in
+`CheatcodeCfg` instead, same shape.
+
+`concatenate_terms = False` on both groups because `policy` mixes
+heterogeneous shapes (`uint8` images + low-dim floats), and the recorder
+writes each term as its own HDF5 dataset.
 
 Why here: which `ObsTerm`s to wire is an IsaacLab cfg concern. The spec
 only tells you the asset / command / action names to plug in; you read
@@ -297,7 +312,7 @@ Edit
 Why here: the asset / layout layer owns where things go and how much they
 move. `build_event_cfg` translates those into the `params={...}` of
 `randomize_board_and_parts` at
-[builders.py:227](../aic_task/tasks/manager_based/port_insertion/builders.py#L227).
+[builders.py:309](../aic_task/tasks/manager_based/port_insertion/builders.py#L309).
 No builder change needed.
 
 If you want to drop or add a randomized axis (e.g. randomize `z` too),
@@ -309,7 +324,7 @@ provided dict.
 Cheat-sheet row: *Reset event roster → `build_event_cfg` in `builders.py`*.
 
 Today the event uses
-[`reset_joints_by_offset`](../aic_task/tasks/manager_based/port_insertion/builders.py#L194)
+[`reset_joints_by_offset`](../aic_task/tasks/manager_based/port_insertion/builders.py#L277)
 with `position_range=(-0.3, 0.3)`. To switch to a deterministic reset
 that snaps every joint to the spec default (no random offset), use the
 unwired-but-available term documented in

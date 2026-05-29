@@ -1,7 +1,7 @@
 ---
 scope: reference for every MDP term provided by aic_task — signatures, inputs, outputs, state, knobs, edge cases
 audience: AI agents working in this repo
-last_verified_commit: 8d9a44e
+last_verified_commit: aaaa911
 related:
   - 03_port_insertion_overview.md
   - 04_assembly_pattern.md
@@ -38,11 +38,13 @@ Notes:
   `aic_task.tasks.manager_based.port_insertion.mdp.<core_name>`, so the
   star import is currently the only thing exposing IsaacLab core terms
   here.
-- Only `commands` is re-exported as a local symbol. `events` and
-  `terminations` are imported by `builders.py` directly with their
-  fully-qualified names; they are not surfaced via `mdp.<symbol>`. Stay
-  consistent — when adding a new termination or event, leave it out of
-  `mdp/__init__.py` unless you have a specific reason to expose it.
+- Only `commands` is re-exported as a local symbol. `events`,
+  `terminations`, `observations`, and `recorders` are imported by
+  `builders.py` (and `scripts/record_demos.py` for `recorders`) directly
+  with their fully-qualified names; they are not surfaced via
+  `mdp.<symbol>`. Stay consistent — when adding a new termination,
+  event, observation, or recorder, leave it out of `mdp/__init__.py`
+  unless you have a specific reason to expose it.
 - The folder is blacklisted from task auto-discovery via `_BLACKLIST_PKGS`
   in [tasks/__init__.py](../aic_task/tasks/__init__.py); see
   [02_gym_registration.md](02_gym_registration.md). Importing a file under
@@ -59,7 +61,7 @@ for the selected port's entrance and seat frames.
 | Cfg symbol | [`InsertionGoalCommandCfg`](../aic_task/tasks/manager_based/port_insertion/mdp/commands.py#L164) |
 | Base class | `isaaclab.managers.CommandTerm` |
 | Registered as | `insertion_goal` command term (name set by `InsertionGoalSpec.command_name` in [specs.py:54](../aic_task/tasks/manager_based/port_insertion/specs.py#L54)) |
-| Built by | [`build_command_cfg`](../aic_task/tasks/manager_based/port_insertion/builders.py#L130) |
+| Built by | [`build_command_cfg`](../aic_task/tasks/manager_based/port_insertion/builders.py#L138) |
 
 ### Cfg fields (all default-valued)
 
@@ -78,7 +80,7 @@ for the selected port's entrance and seat frames.
 | `debug_vis` | `bool` | `False` | `goal.debug_vis` | No built-in marker drawing. |
 
 Builder-side validation lives in
-[`_validate_command_cfg`](../aic_task/tasks/manager_based/port_insertion/builders.py#L382)
+[`_validate_command_cfg`](../aic_task/tasks/manager_based/port_insertion/builders.py#L464)
 and rejects empty frame paths, mismatched slot/port names, and a zero
 orientation quaternion.
 
@@ -154,7 +156,7 @@ agents) can read them without unpacking the 14-D layout:
 
 Available for use; **not wired into `AIC-Port-Insertion-v0` today** — the
 current task uses `isaaclab.envs.mdp.reset_joints_by_offset` via
-[`build_event_cfg`](../aic_task/tasks/manager_based/port_insertion/builders.py#L194)
+[`build_event_cfg`](../aic_task/tasks/manager_based/port_insertion/builders.py#L270)
 so it can introduce joint randomization without swapping the event term.
 Reach for this one when you specifically want a deterministic reset to
 the spec-supplied default and don't want the `(0, 0)` range idiom on
@@ -243,7 +245,7 @@ behavior change rather than a tuning change.
 | Field | Value |
 |---|---|
 | Symbol | [`randomize_dome_light`](../aic_task/tasks/manager_based/port_insertion/mdp/events.py#L50) |
-| Mode | `"reset"` (wired by [build_event_cfg](../aic_task/tasks/manager_based/port_insertion/builders.py#L203)) |
+| Mode | `"reset"` (wired by [build_event_cfg](../aic_task/tasks/manager_based/port_insertion/builders.py#L286)) |
 | Registered as | `randomize_light` event term |
 
 ### Signature
@@ -263,9 +265,9 @@ def randomize_dome_light(
 ```
 
 Knobs surfaced via `build_event_cfg`'s `params=...`
-([builders.py:203](../aic_task/tasks/manager_based/port_insertion/builders.py#L203)):
+([builders.py:286](../aic_task/tasks/manager_based/port_insertion/builders.py#L286)):
 `light_scene_name="light"` (the slot added inside `build_scene_cfg` —
-see [builders.py:79](../aic_task/tasks/manager_based/port_insertion/builders.py#L79)),
+see [builders.py:87](../aic_task/tasks/manager_based/port_insertion/builders.py#L87)),
 plus the intensity / color ranges shown above. Defaults are repeated in
 the builder; both must match if you change either.
 
@@ -286,7 +288,7 @@ the builder; both must match if you change either.
   under a different name), the function returns early without raising,
   which means a typo in `light_scene_name` silently no-ops. Cross-check
   against the constant `_LIGHT_SCENE_NAME` in
-  [builders.py:44](../aic_task/tasks/manager_based/port_insertion/builders.py#L44).
+  [builders.py:52](../aic_task/tasks/manager_based/port_insertion/builders.py#L52).
 
 ## `randomize_board_and_parts`
 
@@ -316,7 +318,7 @@ def randomize_board_and_parts(
 ```
 
 The builder
-([builders.py:227](../aic_task/tasks/manager_based/port_insertion/builders.py#L227))
+([builders.py:309](../aic_task/tasks/manager_based/port_insertion/builders.py#L309))
 unpacks the layout's `randomization` spec (a
 [`LayoutRandomizationSpec`](../aic_task/asset_specs/scene.py#L48)) into
 the plain `Mapping[axis, bounds]` and `Mapping[axis, step]` dicts this
@@ -376,7 +378,7 @@ function accepts.
   across runs depends on each library's separate seed state.
 - If a part dict references a slot the layout doesn't define, the lookup
   inside the builder
-  ([builders.py:218](../aic_task/tasks/manager_based/port_insertion/builders.py#L218))
+  ([builders.py:300](../aic_task/tasks/manager_based/port_insertion/builders.py#L300))
   raises `KeyError` at build time, before the env starts. Good.
 - `sync_usd_xforms=True` opens the live stage from inside the event,
   which is fine inside Isaac Sim but unusable in environments without an
@@ -392,7 +394,7 @@ The success termination. Stateful per-env counter — fires only after
 |---|---|
 | Symbol | [`InsertionGoalReachedSuccess`](../aic_task/tasks/manager_based/port_insertion/mdp/terminations.py#L23) |
 | Base class | `isaaclab.managers.ManagerTermBase` |
-| Registered as | `success` termination ([builders.py:250](../aic_task/tasks/manager_based/port_insertion/builders.py#L250)) |
+| Registered as | `success` termination ([builders.py:333](../aic_task/tasks/manager_based/port_insertion/builders.py#L333)) |
 | Failure-side counterpart | `InsertionGoalStationaryFailure` |
 
 ### Call signature
@@ -412,7 +414,7 @@ def __call__(
 
 The builder populates `params={...}` from
 `PortInsertionTerminationSpec` and the EEF body role
-([builders.py:250](../aic_task/tasks/manager_based/port_insertion/builders.py#L250)):
+([builders.py:333](../aic_task/tasks/manager_based/port_insertion/builders.py#L333)):
 
 - `asset_cfg = SceneEntityCfg(robot_slot_name, body_names=eef_body)`
 - `tip_body = robot.body_name_for_role(ROBOT_ROLE_EEF)` (`"sfp_tip_link"` today)
@@ -465,7 +467,7 @@ termination should fire for that env.
   is not "average over N steps within tolerance"; it is "uninterrupted N
   steps within tolerance".
 - `orientation_threshold` is in *radians*. The spec stores it as
-  `math.radians(4.0)` ([specs.py:140](../aic_task/tasks/manager_based/port_insertion/specs.py#L140)).
+  `math.radians(4.0)` ([specs.py:148](../aic_task/tasks/manager_based/port_insertion/specs.py#L148)).
 
 ## `InsertionGoalStationaryFailure`
 
@@ -477,7 +479,7 @@ radius.
 |---|---|
 | Symbol | [`InsertionGoalStationaryFailure`](../aic_task/tasks/manager_based/port_insertion/mdp/terminations.py#L57) |
 | Base class | `isaaclab.managers.ManagerTermBase` |
-| Registered as | `failed_stationary` termination ([builders.py:261](../aic_task/tasks/manager_based/port_insertion/builders.py#L261)) |
+| Registered as | `failed_stationary` termination ([builders.py:344](../aic_task/tasks/manager_based/port_insertion/builders.py#L344)) |
 
 ### Call signature
 
@@ -548,3 +550,74 @@ term when the robot is parked *on* the goal.
   `PortInsertionTerminationSpec` ([specs.py:62](../aic_task/tasks/manager_based/port_insertion/specs.py#L62));
   there is no enforced relation between them. If you tighten one, decide
   whether you want the other to move too.
+
+## Observation functions in `mdp/observations.py`
+
+Six stateless observation functions backing the `policy` + `cheatcode`
+obs groups. All pose/velocity outputs are expressed in the **robot root
+(base) frame** — env-frame and root-frame differ on this task because
+the UR5e is mounted with a 180° rotation about Z.
+
+| Symbol | Source | Returns | Used by group |
+|---|---|---|---|
+| [`body_pose_b`](../aic_task/tasks/manager_based/port_insertion/mdp/observations.py) | `mdp/observations.py` | `(N, 7·k)` `[xyz, qwxyz]` per body in root frame | `policy` (TCP + EEF) |
+| [`body_vel_b`](../aic_task/tasks/manager_based/port_insertion/mdp/observations.py) | `mdp/observations.py` | `(N, 6·k)` `[lin, ang]` per body in root frame | `policy` (TCP + EEF) |
+| [`insertion_goal_b`](../aic_task/tasks/manager_based/port_insertion/mdp/observations.py) | `mdp/observations.py` | `(N, 14)` entrance + seat poses in root frame | `cheatcode` |
+| [`seat_pos_err_b`](../aic_task/tasks/manager_based/port_insertion/mdp/observations.py) | `mdp/observations.py` | `(N, 3)` root-frame seat − EEF position | `cheatcode` |
+| [`seat_quat_delta_b`](../aic_task/tasks/manager_based/port_insertion/mdp/observations.py) | `mdp/observations.py` | `(N, 4)` root-frame quat delta `inv(q_eef) * q_seat`, canonicalized via `quat_unique` so `qw ≥ 0` | `cheatcode` |
+| [`insertion_fraction`](../aic_task/tasks/manager_based/port_insertion/mdp/observations.py) | `mdp/observations.py` | `(N, 1)` position-only progress in `[0, 1]`, gated to 0 when perpendicular distance to the entrance→seat axis exceeds `lateral_threshold_m` | `cheatcode` |
+
+### Why root-frame for `*_b`
+
+`isaaclab.envs.mdp.observations.body_pose_w` returns env-frame position
++ world-frame quaternion. For this task that's a mixed frame, and
+neither is what forward-kinematics produces from the joint angles. The
+`*_b` family rotates both pose and velocity into the robot's root link
+frame so the observations match what the robot "sees."
+
+### Quaternion canonicalization in `seat_quat_delta_b`
+
+A unit quaternion and its negation encode the same rotation, but a
+per-component L2 loss treats them as different targets. The numeric
+path through `quat_mul`/`quat_inv` can produce either sign of the same
+rotation between adjacent timesteps, injecting fake jumps into the
+signal. `quat_unique` picks the `qw ≥ 0` hemisphere of S³
+deterministically — same rotation → same 4-tensor every step.
+
+### `insertion_fraction` overshoot behavior
+
+`clamp(axial / L, 0, 1)` holds the progress at 1 once the EEF passes the
+seat along the entrance→seat axis. This matches the success-tolerance
+semantics: "past the seat along the axis" still counts as "fully
+inserted" rather than "overshot, regress."
+
+## Recorder terms in `mdp/recorders.py`
+
+Two new symbols + a manager cfg that swaps the stock policy-only
+recorder for a grouped one that captures every observation group.
+
+| Symbol | Source | Purpose |
+|---|---|---|
+| [`PreStepGroupedObservationsRecorder`](../aic_task/tasks/manager_based/port_insertion/mdp/recorders.py) | `mdp/recorders.py` | Returns `("obs", env.obs_buf)`. `EpisodeData.add` recurses into the group dict, so the HDF5 layout becomes `obs/<group>/<term>` (e.g. `obs/policy/joint_pos`, `obs/cheatcode/seat_pos_err`). |
+| [`PreStepGroupedObservationsRecorderCfg`](../aic_task/tasks/manager_based/port_insertion/mdp/recorders.py) | `mdp/recorders.py` | `RecorderTermCfg` wrapper. |
+| [`GroupedActionStateRecorderManagerCfg`](../aic_task/tasks/manager_based/port_insertion/mdp/recorders.py) | `mdp/recorders.py` | Subclass of `ActionStateRecorderManagerCfg`. Disables `record_pre_step_flat_policy_observations` (`= None`, skipped by `RecorderManagerBase._prepare_terms`) and adds `record_pre_step_grouped_observations`. |
+
+### Why the swap exists
+
+The stock
+[`PreStepFlatPolicyObservationsRecorder`](https://github.com/isaac-sim/IsaacLab/blob/main/source/isaaclab/isaaclab/envs/mdp/recorders/recorders.py)
+records `env.obs_buf["policy"]` only and writes it at `obs/<term>` (no
+group subgrouping). The privileged `cheatcode` group never reaches
+disk. `GroupedActionStateRecorderManagerCfg` is wired by
+`scripts/record_demos.py` so BC dataset HDF5 files contain both groups
+under `obs/policy/...` and `obs/cheatcode/...`.
+
+### Dtype preservation
+
+The HDF5 writer
+([`hdf5_dataset_file_handler.py`](https://github.com/isaac-sim/IsaacLab/blob/main/source/isaaclab/isaaclab/utils/datasets/hdf5_dataset_file_handler.py))
+does `group.create_dataset(key, data=value.cpu().numpy(),
+compression="gzip")` with no dtype casting. The `image` obs fn with
+`normalize=False` returns the raw `uint8` RGB tensor from the camera
+sensor, so RGB lands on disk as `uint8` (gzip-compressed) — 4× smaller
+than `float32`. Normalize at train time.

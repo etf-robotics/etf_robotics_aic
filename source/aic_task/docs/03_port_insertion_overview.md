@@ -1,7 +1,7 @@
 ---
 scope: complete behavioral spec of AIC-Port-Insertion-v0 — scene, action, command, observations, events, terminations, episode contract
 audience: AI agents working in this repo
-last_verified_commit: bb6a606
+last_verified_commit: aaaa911
 related:
   - 01_package_structure.md
   - 02_gym_registration.md
@@ -37,7 +37,7 @@ Source files referenced throughout:
 | `episode_length_s` | `120.0 s` | `port_insertion_env_cfg.py:42` |
 | Action term | `arm_action`: relative-mode DiffIK pose on `gripper_tcp` (6-D) | `specs.py:UR5E_DIFF_IK_CONTROLLER`, `builders.build_action_cfg` |
 | Command term | `insertion_goal`: world-frame entrance + seat poses (14-D) | `mdp/commands.py`, `specs.py:NIC_PORT_0_INSERTION_GOAL` |
-| Observation group | `policy` (concatenated, no corruption) | `builders.build_observation_cfg` |
+| Observation groups | `policy` (proprio + body-frame pose/vel + 3 RGB + last action) and `cheatcode` (privileged body-frame goal + errors). Both are unconcatenated, no corruption. | `builders.build_observation_cfg` |
 | Reward manager | **empty** — no shaping | `builders.build_empty_reward_cfg` |
 | Termination terms | `success`, `failed_stationary`, `time_out` | `builders.build_termination_cfg` |
 | Reset events | `reset_robot_joints`, `randomize_light`, `randomize_board_and_parts` | `builders.build_event_cfg` |
@@ -62,9 +62,9 @@ Scene slots (stable names — use these as `env.scene[name]` keys):
 | `light` | infrastructure | — | dome light | (added by `build_scene_cfg`) | Randomized at reset |
 
 Per-camera cfg comes from `UR5E_CABLE_ASSET.camera_frames` (`center_camera`,
-`left_camera`, `right_camera`) and is built with `TiledCameraCfg`. The current
-policy observation group does **not** consume images — cameras exist for
-recording / replay scripts and for whoever wants vision later.
+`left_camera`, `right_camera`) and is built with `TiledCameraCfg`. All three
+RGB streams are consumed by the `policy` observation group as `uint8`
+(`normalize=False`) — see the observation section below.
 
 ## Action — `arm_action`
 
@@ -144,23 +144,51 @@ target_pos = goal.entrance_pos_w     # or goal.seat_pos_w
 target_quat = goal.entrance_quat_w   # or goal.seat_quat_w
 ```
 
-## Observation group — `policy`
+## Observation groups — `policy` and `cheatcode`
 
-`build_observation_cfg` returns `{"policy": PolicyCfg()}`. The group is
-concatenated (`concatenate_terms=True`) and corruption is off
-(`enable_corruption=False`).
+`build_observation_cfg` returns `{"policy": PolicyCfg(), "cheatcode":
+CheatcodeCfg()}`. Both groups disable concatenation
+(`concatenate_terms=False`) and corruption (`enable_corruption=False`).
 
-| Term | Function | Source | Dim (UR5e) |
+The split exists because the policy mixes heterogeneous shapes (`uint8`
+images alongside low-dim floats) and because BC needs privileged scene
+state recorded alongside the policy obs without leaking it into the
+policy's input. The vision-grounded policy learns *where to insert* from
+pixels, not from the goal poses — so `insertion_goal` lives in `cheatcode`,
+not `policy`.
+
+All pose/velocity observations are expressed in the **robot root (base)
+frame**. The UR5e is mounted with a 180° rotation about Z, so env-frame
+≠ root-frame; root-frame is "what the robot sees" via forward kinematics.
+
+### `policy` group
+
+| Term | Function | Source | Shape per env |
 |---|---|---|---|
-| `joint_pos` | `joint_pos_rel` over the arm joint group | `isaaclab.envs.mdp` | 6 |
-| `joint_vel` | `joint_vel_rel` over the arm joint group | `isaaclab.envs.mdp` | 6 |
-| `actions` | `last_action(action_name="arm_action")` | `isaaclab.envs.mdp` | 6 |
-| `insertion_goal` | `generated_commands(command_name="insertion_goal")` | `isaaclab.envs.mdp` | 14 |
+| `joint_pos` | `joint_pos_rel` over the arm joint group | `isaaclab.envs.mdp` | `(6,)` |
+| `joint_vel` | `joint_vel_rel` over the arm joint group | `isaaclab.envs.mdp` | `(6,)` |
+| `tcp_pose` | `body_pose_b` on `gripper_tcp` | `mdp/observations.py` | `(7,)` `[xyz, qwxyz]` |
+| `eef_pose` | `body_pose_b` on `sfp_tip_link` | `mdp/observations.py` | `(7,)` |
+| `tcp_vel` | `body_vel_b` on `gripper_tcp` | `mdp/observations.py` | `(6,)` `[lin, ang]` |
+| `eef_vel` | `body_vel_b` on `sfp_tip_link` | `mdp/observations.py` | `(6,)` |
+| `center_camera_rgb` | `image` with `normalize=False` | `isaaclab.envs.mdp` | `(H, W, 3)` `uint8` |
+| `left_camera_rgb` | same | same | `(H, W, 3)` `uint8` |
+| `right_camera_rgb` | same | same | `(H, W, 3)` `uint8` |
+| `actions` | `last_action(action_name="arm_action")` | `isaaclab.envs.mdp` | `(6,)` |
 
-Total flat observation size = 32 floats per env.
+### `cheatcode` group
 
-There is currently **no image observation** in the policy group. Camera USDs
-are spawned for recording / data collection, not for the policy.
+| Term | Function | Source | Shape per env |
+|---|---|---|---|
+| `insertion_goal` | `insertion_goal_b` (entrance + seat poses in root frame) | `mdp/observations.py` | `(14,)` |
+| `insertion_fraction` | `insertion_fraction` (position-only progress, perp-gated) | `mdp/observations.py` | `(1,)` |
+| `seat_pos_err` | `seat_pos_err_b` (root-frame seat − EEF) | `mdp/observations.py` | `(3,)` |
+| `seat_rot_err` | `seat_quat_delta_b` (root-frame quat delta, canonicalized) | `mdp/observations.py` | `(4,)` |
+
+Recorder note: `cheatcode` lands in HDF5 alongside `policy` only when the
+recorder uses `GroupedActionStateRecorderManagerCfg` from
+`mdp/recorders.py` (the stock `ActionStateRecorderManagerCfg` records only
+`policy`). `scripts/record_demos.py` already does this.
 
 ## Reward manager
 
@@ -249,8 +277,10 @@ Putting it together for one episode of a single env:
    - Policy / agent emits 6-D `arm_action` in `[-1, 1]`.
    - DiffIK in pose+relative mode computes a target TCP pose in the root
      frame and solves for joint targets.
-   - Observation group is published (`joint_pos`, `joint_vel`, `actions`,
-     `insertion_goal`).
+   - Both observation groups are published: `policy` (proprio + body-frame
+     pose/vel of TCP and EEF + three RGB cameras + last action) and
+     `cheatcode` (privileged body-frame goal + errors + insertion
+     progress).
 3. Termination:
    - `success` after `≥ 0.5 s` continuous within `3 mm` + `4°` of the seat
      pose.
@@ -265,8 +295,10 @@ Putting it together for one episode of a single env:
 
 - **No reward terms.** Use the empty reward manager and add your own cfg when
   training.
-- **No image observations in the policy group.** Cameras are present in the
-  scene; consume them at recording time.
+- **No goal in the policy group.** The policy is vision-grounded: it learns
+  the target from pixels, not from an explicit goal vector. The
+  `insertion_goal` term lives in the `cheatcode` group for analysis and
+  asymmetric critics only.
 - **No mid-episode goal resampling.** `resampling_time_range = (1e9, …)`
   locks the goal at reset. Don't expect curriculum-style goal changes.
 - **No gripper action.** The plug is rigidly attached.

@@ -1,7 +1,7 @@
 ---
 scope: file-by-file recipe for creating a new Gym-registered task subpackage under aic_task/tasks/manager_based/, in dependency order
 audience: AI agents working in this repo
-last_verified_commit: cfb23ef
+last_verified_commit: aaaa911
 related:
   - 01_package_structure.md
   - 02_gym_registration.md
@@ -125,7 +125,7 @@ as the shape, not the content. The minimum a task spec needs:
   cross-spec mismatches (controller's `robot_slot` vs. layout's robot
   slot, goal's `target_slot` vs. layout's target slot, port exists on
   target). See
-  [PortInsertionAssemblySpec.validate](../aic_task/tasks/manager_based/port_insertion/specs.py#L91)
+  [PortInsertionAssemblySpec.validate](../aic_task/tasks/manager_based/port_insertion/specs.py#L99)
   for the pattern.
 - A concrete `<NEW>_ASSEMBLY = ...AssemblySpec(...)` constant at the
   bottom of the module, followed by `<NEW>_ASSEMBLY.validate()` so the

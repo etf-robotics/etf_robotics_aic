@@ -1,7 +1,7 @@
 ---
 scope: short index of the AIC-Port-Insertion-v0 task package; points at the deep-dive doc and the files inside this folder
 audience: AI agents working in this repo
-last_verified_commit: bb6a606
+last_verified_commit: aaaa911
 related:
   - ../../../../docs/03_port_insertion_overview.md
   - ../../../../docs/02_gym_registration.md
@@ -25,7 +25,7 @@ This README is just a directory index.
 |---|---|
 | [`__init__.py`](__init__.py) | `gym.register("AIC-Port-Insertion-v0", …)`; provides `env_cfg_entry_point` and `rsl_rl_cfg_entry_point`. |
 | [`port_insertion_env_cfg.py`](port_insertion_env_cfg.py) | `PortInsertionEnvCfg(ManagerBasedRLEnvCfg)` — wires the seven `build_*_cfg(ASSEMBLY)` outputs and sets `sim.dt = 1/120`, `decimation = 4`, `episode_length_s = 120.0`. |
-| [`specs.py`](specs.py) | **Selection layer.** Defines `ControllerSpec`, `InsertionGoalSpec`, `PortInsertionTerminationSpec`, and the concrete `AIC_PORT_INSERTION_ASSEMBLY` that picks the UR5e + NIC card + AIC layout + DiffIK controller + success/stationary thresholds. `validate()` runs at import time. |
+| [`specs.py`](specs.py) | **Selection layer.** Defines `ControllerSpec`, `InsertionGoalSpec`, `PortInsertionTerminationSpec`, `PortInsertionObservationSpec`, and the concrete `AIC_PORT_INSERTION_ASSEMBLY` that picks the UR5e + NIC card + AIC layout + DiffIK controller + success/stationary thresholds + obs knobs. `validate()` runs at import time. |
 | [`builders.py`](builders.py) | **Spec → IsaacLab cfg layer.** Pure functions `build_scene_cfg`, `build_action_cfg`, `build_command_cfg`, `build_observation_cfg`, `build_event_cfg`, `build_termination_cfg`, `build_empty_reward_cfg`. The only file in this folder that imports both `aic_task.asset_specs` and `isaaclab.*` cfg classes. |
 | [`mdp/`](mdp/) | Task-specific MDP terms (see table below). |
 | [`agents/rsl_rl_ppo_cfg.py`](agents/rsl_rl_ppo_cfg.py) | `PPORunnerCfg(RslRlOnPolicyRunnerCfg)` — training-side cfg consumed by `scripts/rsl_rl/`. Not used at sim time. |
@@ -37,6 +37,8 @@ This README is just a directory index.
 | [`mdp/__init__.py`](mdp/__init__.py) | Re-exports `isaaclab.envs.mdp` plus the local `commands` symbols. |
 | [`mdp/commands.py`](mdp/commands.py) | `InsertionGoalCommand` + `InsertionGoalCommandCfg`. Publishes a 14-D tensor `[entrance_pos_w, entrance_quat_w, seat_pos_w, seat_quat_w]` plus named tensor properties on the term itself. |
 | [`mdp/events.py`](mdp/events.py) | Reset-mode events: `randomize_dome_light`, `randomize_board_and_parts` (carries board-relative parts under board jitter, with optional grid snap and USD-xform sync). |
+| [`mdp/observations.py`](mdp/observations.py) | Root-frame pose/velocity (`body_pose_b`, `body_vel_b`) for the `policy` group; privileged goal + errors (`insertion_goal_b`, `seat_pos_err_b`, `seat_quat_delta_b`, `insertion_fraction`) for the `cheatcode` group. |
+| [`mdp/recorders.py`](mdp/recorders.py) | `PreStepGroupedObservationsRecorder` + `GroupedActionStateRecorderManagerCfg` — drop-in replacement for `ActionStateRecorderManagerCfg` that writes every obs group (policy + cheatcode) to HDF5, not just policy. Wired by `scripts/record_demos.py`. |
 | [`mdp/terminations.py`](mdp/terminations.py) | `InsertionGoalReachedSuccess`, `InsertionGoalStationaryFailure` — both stateful, both consume the `insertion_goal` command and the `sfp_tip_link` body. |
 
 ## What lives where (cheat sheet)
@@ -48,6 +50,7 @@ This README is just a directory index.
 | The selected port or its EEF-in-port pose | `NIC_PORT_0_INSERTION_GOAL` in `specs.py` |
 | Robot / target asset choice or layout | swap the constants imported at the top of `specs.py` (`UR5E_CABLE_ASSET`, `NIC_CARD_ASSET`, `AIC_PORT_INSERTION_LAYOUT`) — change `AIC_PORT_INSERTION_ASSEMBLY` accordingly |
 | Observation group composition | `build_observation_cfg` in `builders.py` |
+| Observation knob (e.g. `insertion_lateral_threshold_m`) | `PortInsertionObservationSpec` / `AIC_PORT_INSERTION_OBSERVATION` in `specs.py` |
 | Reset event roster or randomization ranges | `build_event_cfg` in `builders.py` (ranges live on the layout in `asset_specs/scene.py`) |
 | `sim.dt`, `decimation`, `episode_length_s` | `PortInsertionEnvCfg.__post_init__` in `port_insertion_env_cfg.py` |
 | What `insertion_goal` publishes / how the term computes it | `mdp/commands.py` |

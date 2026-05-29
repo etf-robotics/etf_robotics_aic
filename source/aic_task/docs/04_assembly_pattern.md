@@ -1,7 +1,7 @@
 ---
 scope: design rationale for the asset_specs → specs → builders → env_cfg layering used by aic_task
 audience: AI agents working in this repo
-last_verified_commit: 8d9a44e
+last_verified_commit: aaaa911
 related:
   - 01_package_structure.md
   - 03_port_insertion_overview.md
@@ -18,7 +18,7 @@ and how to add a new assembly variant without rewriting the env cfg or any
 builder.
 
 The running example throughout is `AIC_PORT_INSERTION_ASSEMBLY`, defined at
-[specs.py:147](../aic_task/tasks/manager_based/port_insertion/specs.py#L147).
+[specs.py:159](../aic_task/tasks/manager_based/port_insertion/specs.py#L159).
 
 ## The four layers
 
@@ -63,7 +63,7 @@ buys four things:
   shows exactly what changed about the task, with no IsaacLab cfg noise
   mixed in.
 - **Import-time validation.**
-  [`AIC_PORT_INSERTION_ASSEMBLY.validate()`](../aic_task/tasks/manager_based/port_insertion/specs.py#L91)
+  [`AIC_PORT_INSERTION_ASSEMBLY.validate()`](../aic_task/tasks/manager_based/port_insertion/specs.py#L99)
   runs at module import. It fails fast if the controller's `robot_slot`
   doesn't match the layout's robot slot, if the goal targets the wrong
   scene slot, or if the chosen port doesn't exist on the chosen target.
@@ -98,7 +98,7 @@ that becomes an IsaacLab cfg. Splitting buys:
 - **MDP terms get parameters, not constants.** `build_termination_cfg`
   passes `position_threshold`, `orientation_threshold`, `required_seconds`,
   etc. as `params={...}` on the `DoneTerm`
-  ([builders.py:241](../aic_task/tasks/manager_based/port_insertion/builders.py#L241)).
+  ([builders.py:323](../aic_task/tasks/manager_based/port_insertion/builders.py#L323)).
   The term classes in `mdp/terminations.py` never read the assembly. This
   is the rule that keeps `mdp/*.py` cleanly reusable.
 
@@ -131,12 +131,13 @@ just following the table.
 | If you want to change… | Edit | Why here |
 |---|---|---|
 | Success / failure thresholds | `PortInsertionTerminationSpec` in [specs.py](../aic_task/tasks/manager_based/port_insertion/specs.py#L62) | Pure numbers per assembly — no IsaacLab type involved. Builder copies them onto `DoneTerm.params`. |
-| DiffIK scale, IK method, controlled body | `UR5E_DIFF_IK_CONTROLLER` in [specs.py](../aic_task/tasks/manager_based/port_insertion/specs.py#L112) | Same — controller knobs are spec data; `build_action_cfg` translates them. |
-| The selected port or its EEF-in-port pose | `NIC_PORT_0_INSERTION_GOAL` in [specs.py](../aic_task/tasks/manager_based/port_insertion/specs.py#L126) | The goal is a *selection* (which port, which pose-in-port). Port frame paths live one layer down on `NIC_CARD_ASSET`. |
+| DiffIK scale, IK method, controlled body | `UR5E_DIFF_IK_CONTROLLER` in [specs.py](../aic_task/tasks/manager_based/port_insertion/specs.py#L120) | Same — controller knobs are spec data; `build_action_cfg` translates them. |
+| The selected port or its EEF-in-port pose | `NIC_PORT_0_INSERTION_GOAL` in [specs.py](../aic_task/tasks/manager_based/port_insertion/specs.py#L134) | The goal is a *selection* (which port, which pose-in-port). Port frame paths live one layer down on `NIC_CARD_ASSET`. |
 | Robot / target asset choice or layout | Imports at the top of [specs.py](../aic_task/tasks/manager_based/port_insertion/specs.py#L14) | Swap the constants from `asset_specs/`; rebuild `AIC_PORT_INSERTION_ASSEMBLY`. |
 | Body name, joint group, USD path of an asset | [asset_specs/*.py](../aic_task/asset_specs/) | Asset facts. Never duplicate into the spec or builder layer. |
-| Observation group composition | `build_observation_cfg` in [builders.py](../aic_task/tasks/manager_based/port_insertion/builders.py#L159) | The choice of `ObsTerm`s is an IsaacLab cfg concern; the spec only tells you the asset / command / action names to wire in. |
-| Reset event roster | `build_event_cfg` in [builders.py](../aic_task/tasks/manager_based/port_insertion/builders.py#L188) | Same — events are IsaacLab `EventTerm`s. Randomization *ranges* live on the layout in [asset_specs/scene.py](../aic_task/asset_specs/scene.py). |
+| Observation group composition | `build_observation_cfg` in [builders.py](../aic_task/tasks/manager_based/port_insertion/builders.py#L167) | The choice of `ObsTerm`s is an IsaacLab cfg concern; the spec only tells you the asset / command / action names to wire in. |
+| Observation knob (e.g. `insertion_lateral_threshold_m`) | `PortInsertionObservationSpec` in [specs.py](../aic_task/tasks/manager_based/port_insertion/specs.py#L75) | A numeric obs knob shared across many `ObsTerm`s; the spec stores it, the builder plumbs it via `params={...}`. |
+| Reset event roster | `build_event_cfg` in [builders.py](../aic_task/tasks/manager_based/port_insertion/builders.py#L270) | Same — events are IsaacLab `EventTerm`s. Randomization *ranges* live on the layout in [asset_specs/scene.py](../aic_task/asset_specs/scene.py). |
 | `sim.dt`, `decimation`, `episode_length_s` | `PortInsertionEnvCfg.__post_init__` in [port_insertion_env_cfg.py](../aic_task/tasks/manager_based/port_insertion/port_insertion_env_cfg.py) | These are env-level scalars with no assembly variation today. |
 | What the `insertion_goal` term publishes | [mdp/commands.py](../aic_task/tasks/manager_based/port_insertion/mdp/commands.py) | The term implementation. Builder only constructs its cfg from the spec. |
 | When the env reports success / failure | [mdp/terminations.py](../aic_task/tasks/manager_based/port_insertion/mdp/terminations.py) | Same — the logic is in the term. Thresholds come from the spec via the builder. |

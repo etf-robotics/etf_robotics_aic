@@ -1,7 +1,7 @@
 ---
 scope: vocabulary used by the rest of the aic_task docs — one definition per term plus a canonical example anchor
 audience: AI agents working in this repo
-last_verified_commit: cfb23ef
+last_verified_commit: aaaa911
 related:
   - 01_package_structure.md
   - 04_assembly_pattern.md
@@ -26,7 +26,7 @@ cfg's `ASSEMBLY = …` binds the cfg to that constant. The pattern is the
 focus of [04_assembly_pattern.md](04_assembly_pattern.md).
 
 Canonical example:
-[AIC_PORT_INSERTION_ASSEMBLY](../aic_task/tasks/manager_based/port_insertion/specs.py#L147).
+[AIC_PORT_INSERTION_ASSEMBLY](../aic_task/tasks/manager_based/port_insertion/specs.py#L159).
 Its `.validate()` call on the next line is what makes import-time spec
 mismatches blow up before sim start.
 
@@ -39,7 +39,7 @@ The classes
 [`InsertionGoalSpec`](../aic_task/tasks/manager_based/port_insertion/specs.py#L51),
 [`PortInsertionTerminationSpec`](../aic_task/tasks/manager_based/port_insertion/specs.py#L63),
 and the bundling
-[`PortInsertionAssemblySpec`](../aic_task/tasks/manager_based/port_insertion/specs.py#L75)
+[`PortInsertionAssemblySpec`](../aic_task/tasks/manager_based/port_insertion/specs.py#L82)
 are the canonical example. Operational rules in
 [04_assembly_pattern.md](04_assembly_pattern.md#why-split-layer-1-from-layer-2--the-spec-layer).
 
@@ -137,7 +137,7 @@ in the port frame, that the agent must reach. Encoded as an
 and rendered into world frame each step by the
 [`InsertionGoalCommand`](../aic_task/tasks/manager_based/port_insertion/mdp/commands.py#L19)
 term. The current goal is
-[`NIC_PORT_0_INSERTION_GOAL`](../aic_task/tasks/manager_based/port_insertion/specs.py#L126).
+[`NIC_PORT_0_INSERTION_GOAL`](../aic_task/tasks/manager_based/port_insertion/specs.py#L134).
 
 ### entrance frame / seat frame
 
@@ -157,7 +157,7 @@ exists on the target. The reason these are caught fast instead of at
 scene-construction time.
 
 Canonical example:
-[PortInsertionAssemblySpec.validate](../aic_task/tasks/manager_based/port_insertion/specs.py#L91),
+[PortInsertionAssemblySpec.validate](../aic_task/tasks/manager_based/port_insertion/specs.py#L99),
 called on the next line at module scope. Builders also call
 `assembly.validate()` at the top of every `build_*_cfg` so a stale
 assembly fails fast even if the top-level call was skipped.
@@ -220,13 +220,13 @@ slot, and it's called `sfp_tip_link`". The env resolves the name to
 indices the first time the term runs.
 
 Canonical example: the robot-cfg construction inside
-[`build_termination_cfg`](../aic_task/tasks/manager_based/port_insertion/builders.py#L247).
+[`build_termination_cfg`](../aic_task/tasks/manager_based/port_insertion/builders.py#L329).
 
 ### `@configclass`
 
 IsaacLab's `dataclass`-equivalent decorator (from
 `isaaclab.utils.configclass`). Used on every cfg subclass — the env cfg,
-the inline `PolicyCfg` inside `build_observation_cfg`, every
+the inline `PolicyCfg` and `CheatcodeCfg` inside `build_observation_cfg`, every
 `<New>EnvCfg` you write under
 [08_adding_a_new_task.md](08_adding_a_new_task.md). It adds the
 `__post_init__` hook that `ManagerBasedRLEnvCfg` uses to finalize the

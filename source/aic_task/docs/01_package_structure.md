@@ -1,7 +1,7 @@
 ---
 scope: directory map and module roles of the aic_task Python package; dependency direction
 audience: AI agents working in this repo
-last_verified_commit: bb6a606
+last_verified_commit: aaaa911
 related:
   - ../aic_task/README.md
   - 02_gym_registration.md
@@ -72,6 +72,10 @@ source/aic_task/
                 │   ├── __init__.py
                 │   ├── commands.py        InsertionGoalCommand (entrance/seat pose)
                 │   ├── events.py          randomize_dome_light, randomize_board_and_parts
+                │   ├── observations.py    body_pose_b, body_vel_b, insertion_goal_b,
+                │   │                          seat_pos_err_b, seat_quat_delta_b, insertion_fraction
+                │   ├── recorders.py       PreStepGroupedObservationsRecorder +
+                │   │                          GroupedActionStateRecorderManagerCfg
                 │   └── terminations.py    InsertionGoalReachedSuccess, …StationaryFailure
                 └── agents/
                     ├── __init__.py
@@ -121,10 +125,12 @@ This is the only concrete task today. Inside it:
 |---|---|
 | `__init__.py` | The `gym.register("AIC-Port-Insertion-v0", …)` call. Provides `env_cfg_entry_point` and `rsl_rl_cfg_entry_point` kwargs. |
 | `port_insertion_env_cfg.py` | `PortInsertionEnvCfg(ManagerBasedRLEnvCfg)` — thin `@configclass` that wires together the seven `build_*_cfg` outputs and sets `decimation`, `episode_length_s`, `sim.dt`. |
-| `specs.py` | The selection layer: `PortInsertionAssemblySpec`, `ControllerSpec`, `InsertionGoalSpec`, `PortInsertionTerminationSpec`, and the concrete `AIC_PORT_INSERTION_ASSEMBLY` that ties them together. Calls `validate()` at import time. |
+| `specs.py` | The selection layer: `PortInsertionAssemblySpec`, `ControllerSpec`, `InsertionGoalSpec`, `PortInsertionTerminationSpec`, `PortInsertionObservationSpec`, and the concrete `AIC_PORT_INSERTION_ASSEMBLY` that ties them together. Calls `validate()` at import time. |
 | `builders.py` | Pure functions `build_scene_cfg`, `build_action_cfg`, `build_command_cfg`, `build_observation_cfg`, `build_event_cfg`, `build_termination_cfg`, `build_empty_reward_cfg`. Each takes an `AssemblySpec` and returns an IsaacLab cfg object. This is where the spec-vs-cfg boundary lives. |
 | `mdp/commands.py` | `InsertionGoalCommand` term — publishes the entrance/seat pose of the selected port to the env. |
 | `mdp/events.py` | Reset-mode events: `randomize_dome_light`, `randomize_board_and_parts` (board pose + board-relative part poses with optional snap). |
+| `mdp/observations.py` | Root-frame pose/velocity (`body_pose_b`, `body_vel_b`) for the `policy` group; privileged goal + errors (`insertion_goal_b`, `seat_pos_err_b`, `seat_quat_delta_b`, `insertion_fraction`) for the `cheatcode` group. |
+| `mdp/recorders.py` | `PreStepGroupedObservationsRecorder` + `GroupedActionStateRecorderManagerCfg` — captures every obs group (policy + cheatcode) into HDF5 instead of just the policy group. Wired by `scripts/record_demos.py`. |
 | `mdp/terminations.py` | `InsertionGoalReachedSuccess`, `InsertionGoalStationaryFailure` — both consume the command term plus the EEF body pose. |
 | `agents/rsl_rl_ppo_cfg.py` | PPO runner cfg consumed by `scripts/rsl_rl/`. Not used by the env at sim time. |
 
