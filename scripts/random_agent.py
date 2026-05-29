@@ -65,7 +65,7 @@ from isaaclab.utils.math import (
 from isaaclab_tasks.utils import parse_env_cfg
 
 import aic_task.tasks  # noqa: F401
-from aic_task.utils.live_camera_stream import attach_default_camera_stream
+# from aic_task.utils.live_camera_stream import attach_default_camera_stream
 
 
 # DiffIK action scales must match the controller spec used at env build time.
@@ -103,7 +103,7 @@ def main():
         use_fabric=not args_cli.disable_fabric,
     )
     env = gym.make(args_cli.task, cfg=env_cfg)
-    attach_default_camera_stream(env)
+    # attach_default_camera_stream(env)
 
     print(f"[INFO]: Gym observation space: {env.observation_space}")
     print(f"[INFO]: Gym action space: {env.action_space}")
