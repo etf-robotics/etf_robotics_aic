@@ -26,26 +26,23 @@ core IsaacLab MDP library and the local terms from one namespace. It does
 two things and nothing else:
 
 ```python
-from isaaclab.envs.mdp import *                       # everything in the core
-from isaaclab.envs.mdp import (                       # explicit, IDE-discoverable
-    UniformPoseCommandCfg, action_rate_l2, body_pose_w, generated_commands,
-    image, joint_pos_rel, joint_vel_l2, joint_vel_rel, last_action,
-    reset_joints_by_scale, root_pos_w, root_quat_w, time_out,
-)
-from .commands import *                               # adds InsertionGoalCommand[Cfg]
+from isaaclab.envs.mdp import *      # everything in the core
+from .commands import *              # adds InsertionGoalCommand[Cfg]
 ```
 
 Notes:
 
-- The explicit list duplicates names already pulled in by the star import.
-  It exists to make those names visible to static analyzers and to lock in
-  a stable contract — anything dropped from IsaacLab core surfaces as an
-  ImportError here rather than as a silent NameError at first use.
-- Only `commands` is re-exported. `events` and `terminations` are imported
-  by `builders.py` directly with their fully-qualified names; they are not
-  surfaced via `mdp.<symbol>`. Stay consistent — when adding a new
-  termination or event, leave it out of `mdp/__init__.py` unless you have
-  a specific reason to expose it.
+- `builders.py` pulls the IsaacLab core names it needs directly from
+  `isaaclab.envs.mdp` (`generated_commands`, `joint_pos_rel`, `time_out`,
+  …) rather than via this module. Nothing in this package imports from
+  `aic_task.tasks.manager_based.port_insertion.mdp.<core_name>`, so the
+  star import is currently the only thing exposing IsaacLab core terms
+  here.
+- Only `commands` is re-exported as a local symbol. `events` and
+  `terminations` are imported by `builders.py` directly with their
+  fully-qualified names; they are not surfaced via `mdp.<symbol>`. Stay
+  consistent — when adding a new termination or event, leave it out of
+  `mdp/__init__.py` unless you have a specific reason to expose it.
 - The folder is blacklisted from task auto-discovery via `_BLACKLIST_PKGS`
   in [tasks/__init__.py](../aic_task/tasks/__init__.py); see
   [02_gym_registration.md](02_gym_registration.md). Importing a file under
@@ -452,11 +449,11 @@ term when the robot is parked *on* the goal.
   `_stable_counts = one_step`). So even if the robot is perfectly still
   from t=0, the first 30 control steps build up the counter — the term
   cannot fire on step 1.
-- The anchor uses `tip_pos_w.dtype/device` lazily — see the
-  `if self._anchor_pos_w.dtype != tip_pos_w.dtype ...` block at
-  [terminations.py:90](../aic_task/tasks/manager_based/port_insertion/mdp/terminations.py#L90).
-  Don't change `__init__` to `float32` without keeping that re-cast in
-  sync.
+- `_anchor_pos_w` is committed to `(torch.float32, env.device)` at
+  `__init__` time and not re-cast. This assumes IsaacLab's default
+  `float32` body-pose dtype; if you ever run the sim in `float64`, the
+  subtraction `tip_pos_w - self._anchor_pos_w` will raise rather than
+  silently coerce.
 - `success_position_threshold` here and `position_threshold` on the
   success term are different fields with the same numeric value
   (`0.003`). The spec stores them separately in
