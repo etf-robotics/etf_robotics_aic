@@ -87,9 +87,6 @@ class InsertionGoalStationaryFailure(ManagerTermBase):
             tip_body=tip_body,
         )
 
-        if self._anchor_pos_w.dtype != tip_pos_w.dtype or self._anchor_pos_w.device != tip_pos_w.device:
-            self._anchor_pos_w = self._anchor_pos_w.to(dtype=tip_pos_w.dtype, device=tip_pos_w.device)
-
         uninitialized = ~self._initialized
         self._anchor_pos_w = torch.where(uninitialized.unsqueeze(1), tip_pos_w, self._anchor_pos_w)
         self._initialized = torch.ones_like(self._initialized)
