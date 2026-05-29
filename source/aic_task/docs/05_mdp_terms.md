@@ -150,11 +150,99 @@ agents) can read them without unpacking the 14-D layout:
   The base `CommandTerm` reporting hooks therefore have nothing to
   display.
 
+## `reset_robot_to_default_joint_pose`
+
+Available for use; **not wired into `AIC-Port-Insertion-v0` today** — the
+current task uses `isaaclab.envs.mdp.reset_joints_by_offset` via
+[`build_event_cfg`](../aic_task/tasks/manager_based/port_insertion/builders.py#L194)
+so it can introduce joint randomization without swapping the event term.
+Reach for this one when you specifically want a deterministic reset to
+the spec-supplied default and don't want the `(0, 0)` range idiom on
+`reset_joints_by_offset`.
+
+| Field | Value |
+|---|---|
+| Symbol | [`reset_robot_to_default_joint_pose`](../aic_task/tasks/manager_based/port_insertion/mdp/events.py#L30) |
+| Mode | `"reset"` (when wired) |
+| Registered as | not currently registered |
+
+### Signature
+
+```python
+def reset_robot_to_default_joint_pose(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    *,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> None:
+```
+
+### What it does
+
+- Reads `articulation.data.default_joint_pos[env_ids]` and
+  `articulation.data.default_joint_vel[env_ids]`. These are the per-env
+  tensors IsaacLab fills from `ArticulationCfg.InitialStateCfg.joint_pos`
+  at spawn.
+- Writes them back via
+  `asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)`.
+
+That is the entire body. No sampling, no clamping, no range parameter.
+
+### Why this term exists (the reset-on-spawn-only trap)
+
+`ArticulationCfg.InitialStateCfg.joint_pos` is consumed exactly once,
+when the articulation is spawned. It is **not** re-applied on per-env
+episode reset. Without any `mode="reset"` event that writes joint
+state, the articulation keeps whatever joints it had at episode end —
+typically: arm crashed into something, joints near their last commanded
+position.
+
+The two correct fixes:
+
+| Use case | Event |
+|---|---|
+| Deterministic reset to spec default | `reset_robot_to_default_joint_pose` (this term) |
+| Reset to spec default + a uniform offset | `isaaclab.envs.mdp.reset_joints_by_offset` |
+
+The current task picks the second form because it will eventually carry
+non-zero `position_range` / `velocity_range`. The `(0, 0)` range you see
+in `build_event_cfg` today is a placeholder for that randomization, not
+the intended steady state.
+
+### Wiring it in
+
+In a task whose `build_event_cfg` should use deterministic resets:
+
+```python
+from .mdp.events import reset_robot_to_default_joint_pose
+
+events["reset_robot_joints"] = EventTerm(
+    func=reset_robot_to_default_joint_pose,
+    mode="reset",
+    params={"asset_cfg": SceneEntityCfg(robot_slot_name)},
+)
+```
+
+No `position_range` / `velocity_range` keys — there is no randomization
+knob to expose. If you later want randomization, swap this for
+`reset_joints_by_offset`; that's the signal to read the rename as a
+behavior change rather than a tuning change.
+
+### Edge cases worth knowing
+
+- The default-joint-pos tensor comes from IsaacLab populating it from
+  the cfg. If you mutate `articulation.data.default_joint_pos` at
+  runtime, this term will follow the mutation. That is almost always
+  what you want, but it is not a snapshot of the cfg value.
+- `asset_cfg.joint_ids` is ignored — the function writes *all* joints.
+  If you want per-group resets, use `reset_joints_by_offset` with a
+  scoped `SceneEntityCfg` instead; that path already honors `joint_ids`.
+
 ## `randomize_dome_light`
 
 | Field | Value |
 |---|---|
-| Symbol | [`randomize_dome_light`](../aic_task/tasks/manager_based/port_insertion/mdp/events.py#L27) |
+| Symbol | [`randomize_dome_light`](../aic_task/tasks/manager_based/port_insertion/mdp/events.py#L50) |
 | Mode | `"reset"` (wired by [build_event_cfg](../aic_task/tasks/manager_based/port_insertion/builders.py#L203)) |
 | Registered as | `randomize_light` event term |
 
@@ -208,7 +296,7 @@ the board with its own optional jitter and grid snap.
 
 | Field | Value |
 |---|---|
-| Symbol | [`randomize_board_and_parts`](../aic_task/tasks/manager_based/port_insertion/mdp/events.py#L130) |
+| Symbol | [`randomize_board_and_parts`](../aic_task/tasks/manager_based/port_insertion/mdp/events.py#L153) |
 | Mode | `"reset"` |
 | Registered as | `randomize_board_and_parts` event term |
 
@@ -249,7 +337,7 @@ function accepts.
 
 1. Caches each randomized slot's initial root orientation in
    `_cached_orientations[name]` on first use
-   ([events.py:24](../aic_task/tasks/manager_based/port_insertion/mdp/events.py#L24)).
+   ([events.py:27](../aic_task/tasks/manager_based/port_insertion/mdp/events.py#L27)).
    The cache lives at module scope and persists for the process lifetime.
 2. Samples the board's `x`, `y`, and `yaw` offsets from
    `board_pose_ranges`; falls back to `(0, 0)` if an axis is missing.
@@ -258,12 +346,12 @@ function accepts.
    writes it to the simulation via
    `board_asset.write_root_pose_to_sim(...)` and zero velocity.
 4. For each part: samples per-axis offsets (with optional grid snap via
-   [`_sample_axis`](../aic_task/tasks/manager_based/port_insertion/mdp/events.py#L55)),
+   [`_sample_axis`](../aic_task/tasks/manager_based/port_insertion/mdp/events.py#L78)),
    rotates the part's `(x, y)` offset by the board's yaw, and writes the
    composed world pose plus an additional yaw jitter on the part.
 5. When `sync_usd_xforms=True`, also writes the new pose to the underlying
    USD `Xformable` ops via
-   [`_write_usd_xform_pose`](../aic_task/tasks/manager_based/port_insertion/mdp/events.py#L90).
+   [`_write_usd_xform_pose`](../aic_task/tasks/manager_based/port_insertion/mdp/events.py#L113).
    This is what keeps the USD visualization in sync with the physics-side
    `RigidObject` state — required for any code that reads pose from the
    stage (e.g. `InsertionGoalCommand`'s USD walk on resample).
@@ -279,7 +367,7 @@ function accepts.
 
 - Per-part `pose_ranges`/`snap_steps` are looped over `num_resets` in
   Python
-  ([events.py:198](../aic_task/tasks/manager_based/port_insertion/mdp/events.py#L198))
+  ([events.py:221](../aic_task/tasks/manager_based/port_insertion/mdp/events.py#L221))
   rather than vectorized. With many envs and many parts this dominates
   reset time.
 - The function uses Python `random.randint` for snap sampling and

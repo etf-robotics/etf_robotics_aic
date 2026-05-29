@@ -30,5 +30,5 @@ the walker contract.
 |---|---|
 | [`__init__.py`](__init__.py) | Re-exports `isaaclab.envs.mdp.*` plus `InsertionGoalCommand[Cfg]` from `commands`. See [the re-export pattern entry](../../../../../docs/05_mdp_terms.md#re-export-pattern-in-mdp__init__py). |
 | [`commands.py`](commands.py) | [`InsertionGoalCommand`](../../../../../docs/05_mdp_terms.md#insertiongoalcommand) + `InsertionGoalCommandCfg`. |
-| [`events.py`](events.py) | [`randomize_dome_light`](../../../../../docs/05_mdp_terms.md#randomize_dome_light), [`randomize_board_and_parts`](../../../../../docs/05_mdp_terms.md#randomize_board_and_parts). |
+| [`events.py`](events.py) | [`reset_robot_to_default_joint_pose`](../../../../../docs/05_mdp_terms.md#reset_robot_to_default_joint_pose) *(available, not wired)*, [`randomize_dome_light`](../../../../../docs/05_mdp_terms.md#randomize_dome_light), [`randomize_board_and_parts`](../../../../../docs/05_mdp_terms.md#randomize_board_and_parts). |
 | [`terminations.py`](terminations.py) | [`InsertionGoalReachedSuccess`](../../../../../docs/05_mdp_terms.md#insertiongoalreachedsuccess), [`InsertionGoalStationaryFailure`](../../../../../docs/05_mdp_terms.md#insertiongoalstationaryfailure). |

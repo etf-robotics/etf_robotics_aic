@@ -17,11 +17,34 @@ import omni.usd
 import torch
 from pxr import Gf, Sdf, UsdGeom, UsdLux
 
+from isaaclab.managers import SceneEntityCfg
+
 if TYPE_CHECKING:
+    from isaaclab.assets import Articulation
     from isaaclab.envs import ManagerBasedEnv
 
 _ENV_REGEX_RE = re.compile(r"env_(?:\.\*|\[\^/\]\*)")
 _cached_orientations: dict[str, torch.Tensor] = {}
+
+
+def reset_robot_to_default_joint_pose(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    *,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> None:
+    """Re-apply the articulation's default joint pose on episode reset.
+
+    ``ArticulationCfg.InitialStateCfg.joint_pos`` is consumed only at spawn;
+    without a reset event the articulation keeps whatever joint state it
+    ended the previous episode in. Use this term when the task wants a
+    deterministic reset to the spec-supplied default. For a randomized
+    reset, use ``isaaclab.envs.mdp.reset_joints_by_offset`` instead.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    joint_pos = asset.data.default_joint_pos[env_ids].clone()
+    joint_vel = asset.data.default_joint_vel[env_ids].clone()
+    asset.write_joint_state_to_sim(joint_pos, joint_vel, env_ids=env_ids)
 
 
 def randomize_dome_light(
@@ -226,4 +249,5 @@ def randomize_board_and_parts(
 __all__ = [
     "randomize_board_and_parts",
     "randomize_dome_light",
+    "reset_robot_to_default_joint_pose",
 ]
