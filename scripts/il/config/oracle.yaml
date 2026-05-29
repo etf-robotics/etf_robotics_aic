@@ -1,3 +1,5 @@
+# This file is not used, but can be valuable as a reference for default values for the oracle agent. It is not used by default to avoid confusion about which config file is actually being used.
+# AI should not read this file, but it is left here for human reference.
 # Defaults for scripts/il/nic_card_insert_oracle.py.
 # CLI flags still override these values.
 
