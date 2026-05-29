@@ -30,12 +30,6 @@ parser.add_argument(
     "--sensitivity", type=float, default=1.0, help="Sensitivity factor."
 )
 parser.add_argument(
-    "--disable_fabric",
-    action="store_true",
-    default=False,
-    help="Disable fabric and use USD I/O operations.",
-)
-parser.add_argument(
     "--enable_pinocchio",
     action="store_true",
     default=False,
@@ -98,7 +92,7 @@ def main() -> None:
         args_cli.task,
         device=args_cli.device,
         num_envs=args_cli.num_envs,
-        use_fabric=not args_cli.disable_fabric,
+        use_fabric=True,
     )
     env_cfg.env_name = args_cli.task
     if not isinstance(env_cfg, ManagerBasedRLEnvCfg):

@@ -12,12 +12,6 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="Goal-driven agent for the port-insertion task.")
 parser.add_argument(
-    "--disable_fabric",
-    action="store_true",
-    default=False,
-    help="Disable fabric and use USD I/O operations.",
-)
-parser.add_argument(
     "--num_envs", type=int, default=None, help="Number of environments to simulate."
 )
 parser.add_argument("--task", type=str, default="AIC-Port-Insertion-v0", help="Name of the task.")
@@ -100,7 +94,7 @@ def main():
         args_cli.task,
         device=args_cli.device,
         num_envs=args_cli.num_envs,
-        use_fabric=not args_cli.disable_fabric,
+        use_fabric=True,
     )
     env = gym.make(args_cli.task, cfg=env_cfg)
     # attach_default_camera_stream(env)

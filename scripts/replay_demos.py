@@ -58,13 +58,6 @@ parser.add_argument(
     default=False,
     help="Validate replay success rate using task termination criteria.",
 )
-parser.add_argument(
-    "--disable_fabric",
-    action="store_true",
-    default=False,
-    help="Disable fabric and use USD I/O operations.",
-)
-
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 if os.environ.get("AIC_CAMERA_STREAM", "1").strip().lower() not in {"0", "false", "no", "off"}:
@@ -167,7 +160,7 @@ def main():
         env_name,
         device=args_cli.device,
         num_envs=num_envs,
-        use_fabric=not args_cli.disable_fabric,
+        use_fabric=True,
     )
 
     # Extract success termination for validation

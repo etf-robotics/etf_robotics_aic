@@ -58,13 +58,6 @@ parser.add_argument(
     default=10,
     help="Consecutive steps with task success to conclude a demo as successful.",
 )
-parser.add_argument(
-    "--disable_fabric",
-    action="store_true",
-    default=False,
-    help="Disable fabric and use USD I/O operations.",
-)
-
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 if os.environ.get("AIC_CAMERA_STREAM", "1").strip().lower() not in {"0", "false", "no", "off"}:
@@ -142,7 +135,7 @@ def main() -> None:
         args_cli.task,
         device=args_cli.device,
         num_envs=1,
-        use_fabric=not args_cli.disable_fabric,
+        use_fabric=True,
     )
     env_cfg.env_name = args_cli.task.split(":")[-1]
 
