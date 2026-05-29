@@ -553,18 +553,21 @@ term when the robot is parked *on* the goal.
 
 ## Observation functions in `mdp/observations.py`
 
-Six stateless observation functions backing the `policy` + `cheatcode`
+Split stateless observation functions back the `policy` + `cheatcode`
 obs groups. All pose/velocity outputs are expressed in the **robot root
 (base) frame** — env-frame and root-frame differ on this task because
 the UR5e is mounted with a 180° rotation about Z.
 
 | Symbol | Source | Returns | Used by group |
 |---|---|---|---|
-| [`body_pose_b`](../aic_task/tasks/manager_based/port_insertion/mdp/observations.py) | `mdp/observations.py` | `(N, 7·k)` `[xyz, qwxyz]` per body in root frame | `policy` (TCP + EEF) |
-| [`body_vel_b`](../aic_task/tasks/manager_based/port_insertion/mdp/observations.py) | `mdp/observations.py` | `(N, 6·k)` `[lin, ang]` per body in root frame | `policy` (TCP + EEF) |
-| [`insertion_goal_b`](../aic_task/tasks/manager_based/port_insertion/mdp/observations.py) | `mdp/observations.py` | `(N, 14)` entrance + seat poses in root frame | `cheatcode` |
-| [`seat_pos_err_b`](../aic_task/tasks/manager_based/port_insertion/mdp/observations.py) | `mdp/observations.py` | `(N, 3)` root-frame seat − EEF position | `cheatcode` |
-| [`seat_quat_delta_b`](../aic_task/tasks/manager_based/port_insertion/mdp/observations.py) | `mdp/observations.py` | `(N, 4)` root-frame quat delta `inv(q_eef) * q_seat`, canonicalized via `quat_unique` so `qw ≥ 0` | `cheatcode` |
+| [`body_pos_b`](../aic_task/tasks/manager_based/port_insertion/mdp/observations.py) | `mdp/observations.py` | `(N, 3·k)` body positions in root frame | `policy` (`tcp_pos_b`, `eef_pos_b`) |
+| [`body_quat_b`](../aic_task/tasks/manager_based/port_insertion/mdp/observations.py) | `mdp/observations.py` | `(N, 4·k)` body orientations in root frame | `policy` (`tcp_quat_b`, `eef_quat_b`) |
+| [`body_lin_vel_b`](../aic_task/tasks/manager_based/port_insertion/mdp/observations.py) | `mdp/observations.py` | `(N, 3·k)` body linear velocities in root frame | `policy` (`tcp_lin_vel_b`, `eef_lin_vel_b`) |
+| [`body_ang_vel_b`](../aic_task/tasks/manager_based/port_insertion/mdp/observations.py) | `mdp/observations.py` | `(N, 3·k)` body angular velocities in root frame | `policy` (`tcp_ang_vel_b`, `eef_ang_vel_b`) |
+| [`entrance_pos_b`](../aic_task/tasks/manager_based/port_insertion/mdp/observations.py) | `mdp/observations.py` | `(N, 3)` entrance position in root frame | `cheatcode` |
+| [`entrance_quat_b`](../aic_task/tasks/manager_based/port_insertion/mdp/observations.py) | `mdp/observations.py` | `(N, 4)` entrance orientation in root frame | `cheatcode` |
+| [`seat_pos_b`](../aic_task/tasks/manager_based/port_insertion/mdp/observations.py) | `mdp/observations.py` | `(N, 3)` seat position in root frame | `cheatcode` |
+| [`seat_quat_b`](../aic_task/tasks/manager_based/port_insertion/mdp/observations.py) | `mdp/observations.py` | `(N, 4)` seat orientation in root frame | `cheatcode` |
 | [`insertion_fraction`](../aic_task/tasks/manager_based/port_insertion/mdp/observations.py) | `mdp/observations.py` | `(N, 1)` position-only progress in `[0, 1]`, gated to 0 when perpendicular distance to the entrance→seat axis exceeds `lateral_threshold_m` | `cheatcode` |
 
 ### Why root-frame for `*_b`
@@ -572,17 +575,8 @@ the UR5e is mounted with a 180° rotation about Z.
 `isaaclab.envs.mdp.observations.body_pose_w` returns env-frame position
 + world-frame quaternion. For this task that's a mixed frame, and
 neither is what forward-kinematics produces from the joint angles. The
-`*_b` family rotates both pose and velocity into the robot's root link
+`*_b` family rotates poses and velocities into the robot's root link
 frame so the observations match what the robot "sees."
-
-### Quaternion canonicalization in `seat_quat_delta_b`
-
-A unit quaternion and its negation encode the same rotation, but a
-per-component L2 loss treats them as different targets. The numeric
-path through `quat_mul`/`quat_inv` can produce either sign of the same
-rotation between adjacent timesteps, injecting fake jumps into the
-signal. `quat_unique` picks the `qw ≥ 0` hemisphere of S³
-deterministically — same rotation → same 4-tensor every step.
 
 ### `insertion_fraction` overshoot behavior
 
@@ -598,7 +592,7 @@ recorder for a grouped one that captures every observation group.
 
 | Symbol | Source | Purpose |
 |---|---|---|
-| [`PreStepGroupedObservationsRecorder`](../aic_task/tasks/manager_based/port_insertion/mdp/recorders.py) | `mdp/recorders.py` | Returns `("obs", env.obs_buf)`. `EpisodeData.add` recurses into the group dict, so the HDF5 layout becomes `obs/<group>/<term>` (e.g. `obs/policy/joint_pos`, `obs/cheatcode/seat_pos_err`). |
+| [`PreStepGroupedObservationsRecorder`](../aic_task/tasks/manager_based/port_insertion/mdp/recorders.py) | `mdp/recorders.py` | Returns `("obs", env.obs_buf)`. `EpisodeData.add` recurses into the group dict, so the HDF5 layout becomes `obs/<group>/<term>` (e.g. `obs/policy/joint_pos`, `obs/cheatcode/seat_pos_b`). |
 | [`PreStepGroupedObservationsRecorderCfg`](../aic_task/tasks/manager_based/port_insertion/mdp/recorders.py) | `mdp/recorders.py` | `RecorderTermCfg` wrapper. |
 | [`GroupedActionStateRecorderManagerCfg`](../aic_task/tasks/manager_based/port_insertion/mdp/recorders.py) | `mdp/recorders.py` | Subclass of `ActionStateRecorderManagerCfg`. Disables `record_pre_step_flat_policy_observations` (`= None`, skipped by `RecorderManagerBase._prepare_terms`) and adds `record_pre_step_grouped_observations`. |
 

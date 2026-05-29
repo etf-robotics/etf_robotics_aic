@@ -5,17 +5,16 @@
 
 """Observation terms for the port-insertion task.
 
-Provides root-frame pose and velocity observations consumed by the policy
-obs group, plus privileged goal/error observations consumed by the
-``cheatcode`` obs group used for BC dataset recording and asymmetric
-critics.
+Provides split root-frame pose and velocity observations consumed by the
+policy obs group, plus privileged root-frame command-target observations
+consumed by the ``cheatcode`` obs group used for BC dataset recording and
+asymmetric critics.
 
-Frame convention: pose, velocity, and position-error outputs of ``*_b``
+Frame convention: pose, velocity, and command-target outputs of ``*_b``
 functions are expressed in the asset root-link frame. The port-insertion
 task mounts the UR5e with a 180-degree rotation about Z, so env-frame and
 root-frame differ; root-frame is what the robot "sees" via forward
-kinematics. Derived relative-orientation errors are documented on their
-individual functions.
+kinematics.
 """
 
 from __future__ import annotations
@@ -26,164 +25,113 @@ import torch
 
 from isaaclab.assets import Articulation
 from isaaclab.managers import SceneEntityCfg
-from isaaclab.utils.math import quat_apply_inverse, quat_inv, quat_mul, quat_unique
+from isaaclab.utils.math import quat_apply_inverse, quat_inv, quat_mul
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
-def body_pose_b(
+def body_pos_b(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """Body poses expressed in the asset's root-link frame.
+    """Body positions expressed in the asset's root-link frame."""
 
-    Args:
-        env: The environment.
-        asset_cfg: The articulation and target body indices.
-
-    Returns:
-        Flattened poses ``[x, y, z, qw, qx, qy, qz]`` per body in the root
-        frame, stacked horizontally. Shape ``(num_envs, 7 * num_bodies)``.
-    """
     asset: Articulation = env.scene[asset_cfg.name]
-    body_pos_w = asset.data.body_pos_w[:, asset_cfg.body_ids, :]
-    body_quat_w = asset.data.body_quat_w[:, asset_cfg.body_ids, :]
+    body_pos_w = _select_body_tensor(asset.data.body_pos_w, asset_cfg)
     num_bodies = body_pos_w.shape[1]
     root_pos_w = asset.data.root_pos_w.unsqueeze(1).expand(-1, num_bodies, -1)
     root_quat_w = asset.data.root_quat_w.unsqueeze(1).expand(-1, num_bodies, -1)
 
     pos_b = quat_apply_inverse(root_quat_w, body_pos_w - root_pos_w)
-    quat_b = quat_mul(quat_inv(root_quat_w), body_quat_w)
-    return torch.cat([pos_b, quat_b], dim=-1).reshape(env.num_envs, -1)
+    return pos_b.reshape(env.num_envs, -1)
 
 
-def body_vel_b(
+def body_quat_b(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """Body 6D velocity ``[lin(3), ang(3)]`` in the asset's root-link frame.
+    """Body orientations expressed in the asset's root-link frame."""
 
-    Subtracts the root-link world velocity then rotates into the root
-    frame. For a fixed-base articulation the root terms are zero; the
-    subtraction is kept for correctness with moving-base assets.
-
-    Args:
-        env: The environment.
-        asset_cfg: The articulation and target body indices.
-
-    Returns:
-        Flattened 6D velocity per body. Shape ``(num_envs, 6 * num_bodies)``.
-    """
     asset: Articulation = env.scene[asset_cfg.name]
-    body_lin_w = asset.data.body_lin_vel_w[:, asset_cfg.body_ids, :]
-    body_ang_w = asset.data.body_ang_vel_w[:, asset_cfg.body_ids, :]
+    body_quat_w = _select_body_tensor(asset.data.body_quat_w, asset_cfg)
+    num_bodies = body_quat_w.shape[1]
+    root_quat_w = asset.data.root_quat_w.unsqueeze(1).expand(-1, num_bodies, -1)
+
+    quat_b = quat_mul(quat_inv(root_quat_w), body_quat_w)
+    return quat_b.reshape(env.num_envs, -1)
+
+
+def body_lin_vel_b(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Body linear velocity expressed in the asset's root-link frame."""
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    body_lin_w = _select_body_tensor(asset.data.body_lin_vel_w, asset_cfg)
     num_bodies = body_lin_w.shape[1]
     root_lin_w = asset.data.root_lin_vel_w.unsqueeze(1).expand(-1, num_bodies, -1)
-    root_ang_w = asset.data.root_ang_vel_w.unsqueeze(1).expand(-1, num_bodies, -1)
     root_quat_w = asset.data.root_quat_w.unsqueeze(1).expand(-1, num_bodies, -1)
 
     lin_b = quat_apply_inverse(root_quat_w, body_lin_w - root_lin_w)
+    return lin_b.reshape(env.num_envs, -1)
+
+
+def body_ang_vel_b(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Body angular velocity expressed in the asset's root-link frame."""
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    body_ang_w = _select_body_tensor(asset.data.body_ang_vel_w, asset_cfg)
+    num_bodies = body_ang_w.shape[1]
+    root_ang_w = asset.data.root_ang_vel_w.unsqueeze(1).expand(-1, num_bodies, -1)
+    root_quat_w = asset.data.root_quat_w.unsqueeze(1).expand(-1, num_bodies, -1)
+
     ang_b = quat_apply_inverse(root_quat_w, body_ang_w - root_ang_w)
-    return torch.cat([lin_b, ang_b], dim=-1).reshape(env.num_envs, -1)
+    return ang_b.reshape(env.num_envs, -1)
 
 
-def insertion_goal_b(
+def entrance_pos_b(
     env: ManagerBasedRLEnv,
     command_name: str,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
-    """Insertion goal poses (entrance + seat) in the asset's root frame.
+    """Entrance goal position expressed in the asset's root-link frame."""
 
-    Reads the world-frame entrance and seat poses published by the named
-    command term and transforms each pose into the asset's root frame using
-    the same convention as :func:`body_pose_b`.
-
-    Args:
-        env: The environment.
-        command_name: Name of the registered command term that exposes
-            ``entrance_pos_w``, ``entrance_quat_w``, ``seat_pos_w``,
-            ``seat_quat_w``.
-        asset_cfg: The articulation whose root frame is the target frame.
-
-    Returns:
-        Concatenated ``[entr_pos_b(3), entr_quat_b(4), seat_pos_b(3),
-        seat_quat_b(4)]``. Shape ``(num_envs, 14)``.
-    """
-    asset: Articulation = env.scene[asset_cfg.name]
-    goal = env.command_manager.get_term(command_name)
-
-    root_pos_w = asset.data.root_pos_w
-    root_quat_w = asset.data.root_quat_w
-    root_quat_inv = quat_inv(root_quat_w)
-
-    entr_pos_b = quat_apply_inverse(root_quat_w, goal.entrance_pos_w - root_pos_w)
-    entr_quat_b = quat_mul(root_quat_inv, goal.entrance_quat_w)
-    seat_pos_b = quat_apply_inverse(root_quat_w, goal.seat_pos_w - root_pos_w)
-    seat_quat_b = quat_mul(root_quat_inv, goal.seat_quat_w)
-
-    return torch.cat([entr_pos_b, entr_quat_b, seat_pos_b, seat_quat_b], dim=-1)
+    return _goal_pos_b(env, command_name, asset_cfg, goal_name="entrance")
 
 
-def seat_pos_err_b(
+def entrance_quat_b(
     env: ManagerBasedRLEnv,
     command_name: str,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    body_name: str = "sfp_tip_link",
 ) -> torch.Tensor:
-    """Body-frame position error from the named body to the goal seat.
+    """Entrance goal orientation expressed in the asset's root-link frame."""
 
-    Computed as ``(seat_pos_w - body_pos_w)`` rotated into the asset root
-    frame.
-
-    Args:
-        env: The environment.
-        command_name: Name of the command term publishing ``seat_pos_w``.
-        asset_cfg: The articulation owning the reference body.
-        body_name: Name of the body subtracted from the seat position
-            (typically the EEF / insertion tip).
-
-    Returns:
-        Position error per env in root frame. Shape ``(num_envs, 3)``.
-    """
-    asset: Articulation = env.scene[asset_cfg.name]
-    goal = env.command_manager.get_term(command_name)
-    body_id = _resolve_body_id(asset, asset_cfg, body_name)
-
-    eef_pos_w = asset.data.body_pos_w[:, body_id, :]
-    return quat_apply_inverse(asset.data.root_quat_w, goal.seat_pos_w - eef_pos_w)
+    return _goal_quat_b(env, command_name, asset_cfg, goal_name="entrance")
 
 
-def seat_quat_delta_b(
+def seat_pos_b(
     env: ManagerBasedRLEnv,
     command_name: str,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    body_name: str = "sfp_tip_link",
 ) -> torch.Tensor:
-    """Relative quaternion delta from the named body to the goal seat.
+    """Seat goal position expressed in the asset's root-link frame."""
 
-    Computes ``inv(q_body_w) * q_seat_w``. The result is expressed in the
-    named body's local orientation frame and then canonicalized to enforce
-    ``qw >= 0`` so the SO(3) double-cover does not appear as a sign-flip in
-    regression targets.
+    return _goal_pos_b(env, command_name, asset_cfg, goal_name="seat")
 
-    Args:
-        env: The environment.
-        command_name: Name of the command term publishing ``seat_quat_w``.
-        asset_cfg: The articulation owning the reference body.
-        body_name: Name of the body compared against the seat orientation
-            (typically the EEF / insertion tip).
 
-    Returns:
-        Quaternion delta with ``qw >= 0``. Shape ``(num_envs, 4)``.
-    """
-    asset: Articulation = env.scene[asset_cfg.name]
-    goal = env.command_manager.get_term(command_name)
-    body_id = _resolve_body_id(asset, asset_cfg, body_name)
+def seat_quat_b(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Seat goal orientation expressed in the asset's root-link frame."""
 
-    body_quat_w = asset.data.body_quat_w[:, body_id, :]
-    delta = quat_mul(quat_inv(body_quat_w), goal.seat_quat_w)
-    return quat_unique(delta)
+    return _goal_quat_b(env, command_name, asset_cfg, goal_name="seat")
 
 
 def insertion_fraction(
@@ -240,6 +188,52 @@ def insertion_fraction(
     return progress * gate
 
 
+def _goal_pos_b(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    *,
+    goal_name: str,
+) -> torch.Tensor:
+    asset: Articulation = env.scene[asset_cfg.name]
+    goal_pos_w = _goal_tensor_w(env, command_name, goal_name, suffix="pos")
+    return quat_apply_inverse(asset.data.root_quat_w, goal_pos_w - asset.data.root_pos_w)
+
+
+def _goal_quat_b(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    *,
+    goal_name: str,
+) -> torch.Tensor:
+    asset: Articulation = env.scene[asset_cfg.name]
+    goal_quat_w = _goal_tensor_w(env, command_name, goal_name, suffix="quat")
+    return quat_mul(quat_inv(asset.data.root_quat_w), goal_quat_w)
+
+
+def _select_body_tensor(data: torch.Tensor, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    selected = data[:, asset_cfg.body_ids, :]
+    if selected.ndim == 2:
+        selected = selected.unsqueeze(1)
+    return selected
+
+
+def _goal_tensor_w(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    goal_name: str,
+    *,
+    suffix: str,
+) -> torch.Tensor:
+    if goal_name not in {"entrance", "seat"}:
+        raise ValueError(f"Unsupported insertion goal name: {goal_name}")
+    if suffix not in {"pos", "quat"}:
+        raise ValueError(f"Unsupported insertion goal tensor suffix: {suffix}")
+    goal = env.command_manager.get_term(command_name)
+    return getattr(goal, f"{goal_name}_{suffix}_w")
+
+
 def _resolve_body_id(asset: Articulation, asset_cfg: SceneEntityCfg, body_name: str) -> int:
     """Return the first body id for ``asset_cfg``, falling back to ``body_name``.
 
@@ -258,10 +252,13 @@ def _resolve_body_id(asset: Articulation, asset_cfg: SceneEntityCfg, body_name: 
 
 
 __all__ = [
-    "body_pose_b",
-    "body_vel_b",
-    "insertion_goal_b",
-    "seat_pos_err_b",
-    "seat_quat_delta_b",
+    "body_ang_vel_b",
+    "body_lin_vel_b",
+    "body_pos_b",
+    "body_quat_b",
+    "entrance_pos_b",
+    "entrance_quat_b",
+    "seat_pos_b",
+    "seat_quat_b",
     "insertion_fraction",
 ]

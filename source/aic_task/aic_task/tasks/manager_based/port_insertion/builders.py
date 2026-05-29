@@ -37,12 +37,15 @@ from aic_task.asset_specs import (
 from .mdp.commands import InsertionGoalCommandCfg
 from .mdp.events import randomize_board_and_parts, randomize_dome_light
 from .mdp.observations import (
-    body_pose_b,
-    body_vel_b,
+    body_ang_vel_b,
+    body_lin_vel_b,
+    body_pos_b,
+    body_quat_b,
+    entrance_pos_b,
+    entrance_quat_b,
     insertion_fraction,
-    insertion_goal_b,
-    seat_pos_err_b,
-    seat_quat_delta_b,
+    seat_pos_b,
+    seat_quat_b,
 )
 from .mdp.terminations import InsertionGoalReachedSuccess, InsertionGoalStationaryFailure
 from .specs import PortInsertionAssemblySpec
@@ -168,12 +171,12 @@ def build_observation_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, ObsG
     """Build the policy (proprio + vision + last action) and cheatcode obs groups.
 
     ``policy`` is what the BC policy sees at inference: low-dim proprio,
-    body-frame TCP/EEF pose+velocity, three RGB cameras (uint8, normalize off),
-    and the last action. ``cheatcode`` carries privileged scene state
-    (body-frame goal, insertion progress, body-frame errors to the seat) for
-    BC-dataset analysis and asymmetric critics. Both groups disable
-    concatenation because the policy mixes heterogeneous shapes (images +
-    low-dim) and the recorder writes each term as its own HDF5 dataset.
+    split root-frame TCP/EEF position/orientation/velocity, three RGB cameras
+    (uint8, normalize off), and the last action. ``cheatcode`` carries
+    privileged root-frame command targets and insertion progress for BC-dataset
+    analysis and asymmetric critics. Both groups disable concatenation because
+    the policy mixes heterogeneous shapes (images + low-dim) and the recorder
+    writes each term as its own HDF5 dataset.
     """
 
     assembly.validate()
@@ -194,10 +197,14 @@ def build_observation_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, ObsG
     class PolicyCfg(ObsGroup):
         joint_pos = ObsTerm(func=joint_pos_rel, params={"asset_cfg": joint_cfg})
         joint_vel = ObsTerm(func=joint_vel_rel, params={"asset_cfg": joint_cfg})
-        tcp_pose = ObsTerm(func=body_pose_b, params={"asset_cfg": tcp_cfg})
-        eef_pose = ObsTerm(func=body_pose_b, params={"asset_cfg": eef_cfg})
-        tcp_vel = ObsTerm(func=body_vel_b, params={"asset_cfg": tcp_cfg})
-        eef_vel = ObsTerm(func=body_vel_b, params={"asset_cfg": eef_cfg})
+        tcp_pos_b = ObsTerm(func=body_pos_b, params={"asset_cfg": tcp_cfg})
+        tcp_quat_b = ObsTerm(func=body_quat_b, params={"asset_cfg": tcp_cfg})
+        eef_pos_b = ObsTerm(func=body_pos_b, params={"asset_cfg": eef_cfg})
+        eef_quat_b = ObsTerm(func=body_quat_b, params={"asset_cfg": eef_cfg})
+        tcp_lin_vel_b = ObsTerm(func=body_lin_vel_b, params={"asset_cfg": tcp_cfg})
+        tcp_ang_vel_b = ObsTerm(func=body_ang_vel_b, params={"asset_cfg": tcp_cfg})
+        eef_lin_vel_b = ObsTerm(func=body_lin_vel_b, params={"asset_cfg": eef_cfg})
+        eef_ang_vel_b = ObsTerm(func=body_ang_vel_b, params={"asset_cfg": eef_cfg})
         center_camera_rgb = ObsTerm(
             func=image,
             params={
@@ -230,8 +237,20 @@ def build_observation_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, ObsG
 
     @configclass
     class CheatcodeCfg(ObsGroup):
-        insertion_goal = ObsTerm(
-            func=insertion_goal_b,
+        entrance_pos_b = ObsTerm(
+            func=entrance_pos_b,
+            params={"command_name": command_name, "asset_cfg": robot_root_cfg},
+        )
+        entrance_quat_b = ObsTerm(
+            func=entrance_quat_b,
+            params={"command_name": command_name, "asset_cfg": robot_root_cfg},
+        )
+        seat_pos_b = ObsTerm(
+            func=seat_pos_b,
+            params={"command_name": command_name, "asset_cfg": robot_root_cfg},
+        )
+        seat_quat_b = ObsTerm(
+            func=seat_quat_b,
             params={"command_name": command_name, "asset_cfg": robot_root_cfg},
         )
         insertion_fraction = ObsTerm(
@@ -241,22 +260,6 @@ def build_observation_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, ObsG
                 "asset_cfg": eef_cfg,
                 "body_name": eef_body,
                 "lateral_threshold_m": lateral_threshold_m,
-            },
-        )
-        seat_pos_err = ObsTerm(
-            func=seat_pos_err_b,
-            params={
-                "command_name": command_name,
-                "asset_cfg": eef_cfg,
-                "body_name": eef_body,
-            },
-        )
-        seat_rot_err = ObsTerm(
-            func=seat_quat_delta_b,
-            params={
-                "command_name": command_name,
-                "asset_cfg": eef_cfg,
-                "body_name": eef_body,
             },
         )
 

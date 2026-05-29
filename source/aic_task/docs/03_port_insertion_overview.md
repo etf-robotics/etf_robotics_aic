@@ -167,10 +167,14 @@ frame**. The UR5e is mounted with a 180° rotation about Z, so env-frame
 |---|---|---|---|
 | `joint_pos` | `joint_pos_rel` over the arm joint group | `isaaclab.envs.mdp` | `(6,)` |
 | `joint_vel` | `joint_vel_rel` over the arm joint group | `isaaclab.envs.mdp` | `(6,)` |
-| `tcp_pose` | `body_pose_b` on `gripper_tcp` | `mdp/observations.py` | `(7,)` `[xyz, qwxyz]` |
-| `eef_pose` | `body_pose_b` on `sfp_tip_link` | `mdp/observations.py` | `(7,)` |
-| `tcp_vel` | `body_vel_b` on `gripper_tcp` | `mdp/observations.py` | `(6,)` `[lin, ang]` |
-| `eef_vel` | `body_vel_b` on `sfp_tip_link` | `mdp/observations.py` | `(6,)` |
+| `tcp_pos_b` | `body_pos_b` on `gripper_tcp` | `mdp/observations.py` | `(3,)` |
+| `tcp_quat_b` | `body_quat_b` on `gripper_tcp` | `mdp/observations.py` | `(4,)` `[qwxyz]` |
+| `eef_pos_b` | `body_pos_b` on `sfp_tip_link` | `mdp/observations.py` | `(3,)` |
+| `eef_quat_b` | `body_quat_b` on `sfp_tip_link` | `mdp/observations.py` | `(4,)` `[qwxyz]` |
+| `tcp_lin_vel_b` | `body_lin_vel_b` on `gripper_tcp` | `mdp/observations.py` | `(3,)` |
+| `tcp_ang_vel_b` | `body_ang_vel_b` on `gripper_tcp` | `mdp/observations.py` | `(3,)` |
+| `eef_lin_vel_b` | `body_lin_vel_b` on `sfp_tip_link` | `mdp/observations.py` | `(3,)` |
+| `eef_ang_vel_b` | `body_ang_vel_b` on `sfp_tip_link` | `mdp/observations.py` | `(3,)` |
 | `center_camera_rgb` | `image` with `normalize=False` | `isaaclab.envs.mdp` | `(H, W, 3)` `uint8` |
 | `left_camera_rgb` | same | same | `(H, W, 3)` `uint8` |
 | `right_camera_rgb` | same | same | `(H, W, 3)` `uint8` |
@@ -180,10 +184,11 @@ frame**. The UR5e is mounted with a 180° rotation about Z, so env-frame
 
 | Term | Function | Source | Shape per env |
 |---|---|---|---|
-| `insertion_goal` | `insertion_goal_b` (entrance + seat poses in root frame) | `mdp/observations.py` | `(14,)` |
+| `entrance_pos_b` | `entrance_pos_b` | `mdp/observations.py` | `(3,)` |
+| `entrance_quat_b` | `entrance_quat_b` | `mdp/observations.py` | `(4,)` |
+| `seat_pos_b` | `seat_pos_b` | `mdp/observations.py` | `(3,)` |
+| `seat_quat_b` | `seat_quat_b` | `mdp/observations.py` | `(4,)` |
 | `insertion_fraction` | `insertion_fraction` (position-only progress, perp-gated) | `mdp/observations.py` | `(1,)` |
-| `seat_pos_err` | `seat_pos_err_b` (root-frame seat − EEF) | `mdp/observations.py` | `(3,)` |
-| `seat_rot_err` | `seat_quat_delta_b` (root-frame quat delta, canonicalized) | `mdp/observations.py` | `(4,)` |
 
 Recorder note: `cheatcode` lands in HDF5 alongside `policy` only when the
 recorder uses `GroupedActionStateRecorderManagerCfg` from

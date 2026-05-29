@@ -22,7 +22,7 @@ on each obs group, which is what the BC pipeline uses):
 demo_X/
   obs/
     policy/<term>     # e.g. policy/joint_pos, policy/center_camera_rgb
-    cheatcode/<term>  # e.g. cheatcode/insertion_goal_b
+    cheatcode/<term>  # e.g. cheatcode/seat_pos_b
 ```
 """
 
