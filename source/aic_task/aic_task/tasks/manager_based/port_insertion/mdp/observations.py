@@ -10,10 +10,12 @@ obs group, plus privileged goal/error observations consumed by the
 ``cheatcode`` obs group used for BC dataset recording and asymmetric
 critics.
 
-Frame convention: outputs of ``*_b`` functions are expressed in the asset
-root-link frame. The port-insertion task mounts the UR5e with a 180-degree
-rotation about Z, so env-frame and root-frame differ; root-frame is what
-the robot "sees" via forward kinematics.
+Frame convention: pose, velocity, and position-error outputs of ``*_b``
+functions are expressed in the asset root-link frame. The port-insertion
+task mounts the UR5e with a 180-degree rotation about Z, so env-frame and
+root-frame differ; root-frame is what the robot "sees" via forward
+kinematics. Derived relative-orientation errors are documented on their
+individual functions.
 """
 
 from __future__ import annotations
@@ -158,12 +160,12 @@ def seat_quat_delta_b(
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
     body_name: str = "sfp_tip_link",
 ) -> torch.Tensor:
-    """Body-frame quaternion delta from the named body to the goal seat.
+    """Relative quaternion delta from the named body to the goal seat.
 
-    Computes ``inv(q_eef_b) * q_seat_b`` (the relative rotation expressed in
-    the EEF frame), then canonicalizes the result to enforce ``qw >= 0`` so
-    the SO(3) double-cover does not appear as a sign-flip in regression
-    targets.
+    Computes ``inv(q_body_w) * q_seat_w``. The result is expressed in the
+    named body's local orientation frame and then canonicalized to enforce
+    ``qw >= 0`` so the SO(3) double-cover does not appear as a sign-flip in
+    regression targets.
 
     Args:
         env: The environment.
@@ -179,11 +181,8 @@ def seat_quat_delta_b(
     goal = env.command_manager.get_term(command_name)
     body_id = _resolve_body_id(asset, asset_cfg, body_name)
 
-    root_quat_inv = quat_inv(asset.data.root_quat_w)
-    eef_quat_b = quat_mul(root_quat_inv, asset.data.body_quat_w[:, body_id, :])
-    seat_quat_b = quat_mul(root_quat_inv, goal.seat_quat_w)
-
-    delta = quat_mul(quat_inv(eef_quat_b), seat_quat_b)
+    body_quat_w = asset.data.body_quat_w[:, body_id, :]
+    delta = quat_mul(quat_inv(body_quat_w), goal.seat_quat_w)
     return quat_unique(delta)
 
 
