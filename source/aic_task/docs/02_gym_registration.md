@@ -16,7 +16,8 @@ downstream consumers (`parse_env_cfg`, training runners).
 
 If you only want the rule of thumb: **anything that calls `gym.make` on an
 AIC task must import `aic_task` first.** The repo scripts do this at the top
-of the file, e.g. [scripts/random_agent.py:61](../../../scripts/random_agent.py#L61).
+of the file, e.g.
+[scripts/direct_entrance_approach.py](../../../scripts/direct_entrance_approach.py).
 
 ## The import chain (one line at a time)
 

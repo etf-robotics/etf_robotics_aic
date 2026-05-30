@@ -11,8 +11,8 @@ related:
 
 How to drive the robot toward the `insertion_goal` (or any EEF-frame pose)
 with the relative-mode pose DiffIK action used by `AIC-Port-Insertion-v0`.
-Distilled from the fix in
-[`scripts/random_agent.py`](../../../scripts/random_agent.py).
+Distilled from
+[`scripts/direct_entrance_approach.py`](../../../scripts/direct_entrance_approach.py).
 
 ## Action contract
 
@@ -39,14 +39,13 @@ pose to the controller, which then calls `apply_delta_pose`.
 
 ## Recipe
 
-The goal command (`insertion_goal`) is published for the **EEF body
-(`sfp_tip_link`)**, not the TCP. So we have to:
+The root-frame entrance goal is exposed for the **EEF body
+(`sfp_tip_link`)**, not the TCP. Scripted agents should read the named
+root-frame observations returned by `env.reset()` / `env.step()`, then:
 
-1. Compute the static `EEF → TCP` offset from the live world poses.
+1. Compute the static `EEF → TCP` offset from the current root-frame poses.
 2. Shift the EEF goal by that offset to get the TCP goal.
-3. Re-express both the current TCP pose and the TCP goal in the **robot root
-   frame**.
-4. Take the pose error in root frame, divide by `scale`, clamp to `[-1, 1]`.
+3. Take the TCP pose error in root frame, divide by `scale`, clamp to `[-1, 1]`.
 
 ```python
 from isaaclab.utils.math import (
@@ -55,36 +54,28 @@ from isaaclab.utils.math import (
     subtract_frame_transforms,
 )
 
-# 1. Read world-frame poses from the articulation.
-tcp_pos_w  = robot.data.body_pos_w[:, tcp_idx, :]   # gripper_tcp
-tcp_quat_w = robot.data.body_quat_w[:, tcp_idx, :]
-eef_pos_w  = robot.data.body_pos_w[:, eef_idx, :]   # sfp_tip_link
-eef_quat_w = robot.data.body_quat_w[:, eef_idx, :]
-root_pos_w  = robot.data.root_pos_w
-root_quat_w = robot.data.root_quat_w
+# 1. Read root-frame poses from the observation API.
+policy = obs["policy"]
+tcp_pos_b = policy["tcp_pos_b"]    # gripper_tcp
+tcp_quat_b = policy["tcp_quat_b"]
+eef_pos_b = policy["eef_pos_b"]    # sfp_tip_link
+eef_quat_b = policy["eef_quat_b"]
 
 # 2. Static EEF→TCP offset (rigid link, constant per step).
 tcp_in_eef_pos, tcp_in_eef_quat = subtract_frame_transforms(
-    eef_pos_w, eef_quat_w, tcp_pos_w, tcp_quat_w,
+    eef_pos_b, eef_quat_b, tcp_pos_b, tcp_quat_b,
 )
 
-# 3. Pull the EEF-frame goal from the command term and shift it by EEF→TCP
-#    to obtain the TCP goal in world frame.
-eef_goal_pos_w, eef_goal_quat_w = goal_term.entrance_pos_w, goal_term.entrance_quat_w
-tcp_goal_pos_w, tcp_goal_quat_w = combine_frame_transforms(
-    eef_goal_pos_w, eef_goal_quat_w, tcp_in_eef_pos, tcp_in_eef_quat,
+# 3. Pull the root-frame EEF entrance goal from the cheatcode observations
+#    and shift it by EEF→TCP to obtain the root-frame TCP goal.
+cheatcode = obs["cheatcode"]
+eef_goal_pos_b = cheatcode["entrance_pos_b"]
+eef_goal_quat_b = cheatcode["entrance_quat_b"]
+tcp_goal_pos_b, tcp_goal_quat_b = combine_frame_transforms(
+    eef_goal_pos_b, eef_goal_quat_b, tcp_in_eef_pos, tcp_in_eef_quat,
 )
 
-# 4. Re-express current TCP and TCP goal in the ROBOT ROOT frame — this is the
-#    frame DiffIK relative-mode applies the delta in.
-tcp_pos_b, tcp_quat_b = subtract_frame_transforms(
-    root_pos_w, root_quat_w, tcp_pos_w, tcp_quat_w,
-)
-tcp_goal_pos_b, tcp_goal_quat_b = subtract_frame_transforms(
-    root_pos_w, root_quat_w, tcp_goal_pos_w, tcp_goal_quat_w,
-)
-
-# 5. Pose error in root frame, then scale + clamp to one action unit.
+# 4. Pose error in root frame, then scale + clamp to one action unit.
 pos_err, rot_err = compute_pose_error(
     tcp_pos_b, tcp_quat_b, tcp_goal_pos_b, tcp_goal_quat_b,
     rot_error_type="axis_angle",
@@ -93,7 +84,7 @@ scale = torch.tensor(
     [0.015, 0.015, 0.015, 0.025, 0.025, 0.025], device=env.unwrapped.device,
 )
 action = (torch.cat([pos_err, rot_err], dim=-1) / scale).clamp(-1.0, 1.0)
-env.step(action)
+obs, _, _, _, _ = env.step(action)
 ```
 
 ## Gotchas
@@ -103,13 +94,10 @@ env.step(action)
 - **TCP vs. EEF.** The controller drives `gripper_tcp`, but the command term
   publishes `sfp_tip_link`. Always apply the static `EEF→TCP` offset; don't aim
   the TCP straight at the EEF goal.
-- **Body indices.** Resolve with `robot.find_bodies(name)` once outside the
-  loop. The `gripper_tcp` / `sfp_tip_link` names come from the
-  `BodyRoleSpec` entries on `UR5E_CABLE_ASSET`.
+- **Observation groups.** Current TCP/EEF poses live in `obs["policy"]`; the
+  privileged entrance goal lives in `obs["cheatcode"]`. Keep the observation
+  dict returned by each `env.step()` call.
 - **Scale.** It must match `ControllerSpec.scale` for the env. The clamp to
   `[-1, 1]` is what gives "one increment toward the goal per step"; without
   the clamp a large initial error produces a giant requested delta that the
   IK can't actually realize.
-- **Markers for sanity.** Visualizing the EEF and goal frames (`--markers` in
-  `random_agent.py`) is the fastest way to confirm you're aiming at the right
-  thing — they should drift toward overlap as the arm converges.

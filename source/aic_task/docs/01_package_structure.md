@@ -140,7 +140,8 @@ The import graph is one-way. The layer below never imports the layer above.
 
 ```text
                 ┌────────────────────────────────────┐
-                │  scripts/  (random_agent, teleop,  │
+                │  scripts/  (direct approach,       │
+                │            teleop,                 │
                 │            record, replay, rsl_rl) │
                 └────────────────┬───────────────────┘
                                  │ import aic_task   (triggers .tasks/*)

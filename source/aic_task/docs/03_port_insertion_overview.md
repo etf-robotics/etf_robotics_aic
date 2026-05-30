@@ -136,12 +136,28 @@ It also exposes named tensors for direct use by other code:
 - Compatibility aliases `goal.final_tip_pos_w` (== seat pos) and
   `goal.target_tip_quat_w` (== seat quat) used by the termination terms.
 
-How an agent reads it (used by `scripts/random_agent.py`):
+Other code can read the world-frame command term directly:
 
 ```python
 goal = env.unwrapped.command_manager.get_term("insertion_goal")
 target_pos = goal.entrance_pos_w     # or goal.seat_pos_w
 target_quat = goal.entrance_quat_w   # or goal.seat_quat_w
+```
+
+For scripted agents, the intended API is the root-frame observation dict
+returned by `env.reset()` / `env.step()`. For example,
+`scripts/direct_entrance_approach.py` reads:
+
+```python
+policy = obs["policy"]
+tcp_pos_b = policy["tcp_pos_b"]
+tcp_quat_b = policy["tcp_quat_b"]
+eef_pos_b = policy["eef_pos_b"]
+eef_quat_b = policy["eef_quat_b"]
+
+cheatcode = obs["cheatcode"]
+entrance_pos_b = cheatcode["entrance_pos_b"]
+entrance_quat_b = cheatcode["entrance_quat_b"]
 ```
 
 ## Observation groups — `policy` and `cheatcode`
@@ -308,5 +324,5 @@ Putting it together for one episode of a single env:
   locks the goal at reset. Don't expect curriculum-style goal changes.
 - **No gripper action.** The plug is rigidly attached.
 - **No oracle / scripted controller in the task itself.** Scripted policies
-  live in `scripts/` (`random_agent.py` is a goal-driven demo, not a
-  ground-truth oracle).
+  live in `scripts/` (`direct_entrance_approach.py` is a goal-driven demo,
+  not a ground-truth oracle).
