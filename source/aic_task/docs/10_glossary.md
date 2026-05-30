@@ -60,15 +60,18 @@ The function-by-function map is in
 
 A semantic name for a robot body, decoupled from the concrete body name
 the USD uses. The robot spec maps a role string to a body name via
-`body_name_for_role(role)`. The package uses two roles today: `tcp` and
-`eef`. `tcp` is the body the controller drives; `eef` is the physical
-insertion tip used by the goal and the terminations. Why both: the SFP
-plug is rigidly attached past the gripper, so the IK target (TCP) and
-the goal target (EEF) are different rigid links.
+`body_name_for_role(role)`. The package uses three roles today: `tcp`,
+`eef`, and `wrist_ft`. `tcp` is the body the controller drives; `eef`
+is the physical insertion tip used by the goal and the terminations;
+`wrist_ft` is the body the `wrist_wrench` observation reads from
+(`data.body_incoming_joint_wrench_b` at that body). Why split `tcp`
+from `eef`: the SFP plug is rigidly attached past the gripper, so the
+IK target (TCP) and the goal target (EEF) are different rigid links.
 
 Canonical example:
-[BodyRoleSpec for UR5e](../aic_task/asset_specs/robots.py#L105). On the
-current UR5e cable asset, `tcp → "gripper_tcp"` and `eef → "sfp_tip_link"`.
+[BodyRoleSpec for UR5e](../aic_task/asset_specs/robots.py#L106). On the
+current UR5e cable asset, `tcp → "gripper_tcp"`, `eef → "sfp_tip_link"`,
+and `wrist_ft → "ati_tool_link"`.
 
 ### joint group
 

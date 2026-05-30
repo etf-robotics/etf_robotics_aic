@@ -37,7 +37,7 @@ Source files referenced throughout:
 | `episode_length_s` | `120.0 s` | `port_insertion_env_cfg.py:42` |
 | Action term | `arm_action`: relative-mode DiffIK pose on `gripper_tcp` (6-D) | `specs.py:UR5E_DIFF_IK_CONTROLLER`, `builders.build_action_cfg` |
 | Command term | `insertion_goal`: world-frame entrance + seat poses (14-D) | `mdp/commands.py`, `specs.py:NIC_PORT_0_INSERTION_GOAL` |
-| Observation groups | `policy` (proprio + body-frame pose/vel + 3 RGB + last action) and `cheatcode` (privileged body-frame goal + errors). Both are unconcatenated, no corruption. | `builders.build_observation_cfg` |
+| Observation groups | `policy` (proprio + body-frame pose/vel + per-joint torque + wrist F/T wrench + 3 RGB + last action) and `cheatcode` (privileged body-frame goal + errors). Both are unconcatenated, no corruption. | `builders.build_observation_cfg` |
 | Reward manager | **empty** — no shaping | `builders.build_empty_reward_cfg` |
 | Termination terms | `success`, `failed_stationary`, `time_out` | `builders.build_termination_cfg` |
 | Reset events | `reset_robot_joints`, `randomize_light`, `randomize_board_and_parts` | `builders.build_event_cfg` |
@@ -183,6 +183,7 @@ frame**. The UR5e is mounted with a 180° rotation about Z, so env-frame
 |---|---|---|---|
 | `joint_pos` | `joint_pos_rel` over the arm joint group | `isaaclab.envs.mdp` | `(6,)` |
 | `joint_vel` | `joint_vel_rel` over the arm joint group | `isaaclab.envs.mdp` | `(6,)` |
+| `joint_torque` | `joint_applied_torque` over the arm joint group; reads `data.applied_torque` (PD-recomputed for implicit actuators) | `mdp/observations.py` | `(6,)` N·m |
 | `tcp_pos_b` | `body_pos_b` on `gripper_tcp` | `mdp/observations.py` | `(3,)` |
 | `tcp_quat_b` | `body_quat_b` on `gripper_tcp` | `mdp/observations.py` | `(4,)` `[qwxyz]` |
 | `eef_pos_b` | `body_pos_b` on `sfp_tip_link` | `mdp/observations.py` | `(3,)` |
@@ -191,6 +192,7 @@ frame**. The UR5e is mounted with a 180° rotation about Z, so env-frame
 | `tcp_ang_vel_b` | `body_ang_vel_b` on `gripper_tcp` | `mdp/observations.py` | `(3,)` |
 | `eef_lin_vel_b` | `body_lin_vel_b` on `sfp_tip_link` | `mdp/observations.py` | `(3,)` |
 | `eef_ang_vel_b` | `body_ang_vel_b` on `sfp_tip_link` | `mdp/observations.py` | `(3,)` |
+| `wrist_wrench` | `body_incoming_wrench` on `ati_tool_link` (body bound via `wrist_ft` role on the robot spec); 6-DOF joint-reaction wrench in the body's **own local frame** — closest sim analog to a wrist-mounted F/T sensor | `mdp/observations.py` | `(6,)` `[Fx Fy Fz Mx My Mz]` |
 | `center_camera_rgb` | `image` with `normalize=False` | `isaaclab.envs.mdp` | `(H, W, 3)` `uint8` |
 | `left_camera_rgb` | same | same | `(H, W, 3)` `uint8` |
 | `right_camera_rgb` | same | same | `(H, W, 3)` `uint8` |
@@ -298,9 +300,10 @@ Putting it together for one episode of a single env:
    - Policy / agent emits 6-D `arm_action` in `[-1, 1]`.
    - DiffIK in pose+relative mode computes a target TCP pose in the root
      frame and solves for joint targets.
-   - Both observation groups are published: `policy` (proprio + body-frame
-     pose/vel of TCP and EEF + three RGB cameras + last action) and
-     `cheatcode` (privileged body-frame goal + errors + insertion
+   - Both observation groups are published: `policy` (proprio + per-joint
+     applied torque + body-frame pose/vel of TCP and EEF + 6-DOF wrist
+     F/T wrench at `ati_tool_link` + three RGB cameras + last action)
+     and `cheatcode` (privileged body-frame goal + errors + insertion
      progress).
 3. Termination:
    - `success` after `≥ 0.5 s` continuous within `3 mm` + `4°` of the seat

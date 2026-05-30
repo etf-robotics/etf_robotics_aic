@@ -37,7 +37,7 @@ This README is just a directory index.
 | [`mdp/__init__.py`](mdp/__init__.py) | Re-exports `isaaclab.envs.mdp` plus the local `commands` symbols. |
 | [`mdp/commands.py`](mdp/commands.py) | `InsertionGoalCommand` + `InsertionGoalCommandCfg`. Publishes a 14-D tensor `[entrance_pos_w, entrance_quat_w, seat_pos_w, seat_quat_w]` plus named tensor properties on the term itself. |
 | [`mdp/events.py`](mdp/events.py) | Reset-mode events: `randomize_dome_light`, `randomize_board_and_parts` (carries board-relative parts under board jitter, with optional grid snap and USD-xform sync). |
-| [`mdp/observations.py`](mdp/observations.py) | Split root-frame TCP/EEF pose + velocity terms for the `policy` group; privileged split entrance/seat targets plus `insertion_fraction` for the `cheatcode` group. |
+| [`mdp/observations.py`](mdp/observations.py) | Split root-frame TCP/EEF pose + velocity terms, per-joint applied torque (`joint_applied_torque`), and 6-DOF body-local wrist wrench (`body_incoming_wrench`) for the `policy` group; privileged split entrance/seat targets plus `insertion_fraction` for the `cheatcode` group. |
 | [`mdp/recorders.py`](mdp/recorders.py) | `PreStepGroupedObservationsRecorder` + `GroupedActionStateRecorderManagerCfg` — drop-in replacement for `ActionStateRecorderManagerCfg` that writes every obs group (policy + cheatcode) to HDF5, not just policy. Wired by `scripts/record_demos.py`. |
 | [`mdp/terminations.py`](mdp/terminations.py) | `InsertionGoalReachedSuccess`, `InsertionGoalStationaryFailure` — both stateful, both consume the `insertion_goal` command and the `sfp_tip_link` body. |
 

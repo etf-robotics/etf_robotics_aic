@@ -214,7 +214,10 @@ commits.
 
 Cheat-sheet row: *Observation group composition → `build_observation_cfg` in `builders.py`*.
 
-Goal: add `joint_torque` to the policy observation group.
+Goal: add `joint_acc` (joint accelerations) to the policy observation
+group. (`joint_torque` and `wrist_wrench` are already wired today — see
+[03_port_insertion_overview.md](03_port_insertion_overview.md#policy-group);
+use a different hypothetical here so the worked diff stays additive.)
 
 Edit `build_observation_cfg` in
 [builders.py](../aic_task/tasks/manager_based/port_insertion/builders.py).
@@ -228,20 +231,12 @@ should see at inference, append an `ObsTerm` to `PolicyCfg`:
      class PolicyCfg(ObsGroup):
          joint_pos = ObsTerm(func=joint_pos_rel, params={"asset_cfg": joint_cfg})
          joint_vel = ObsTerm(func=joint_vel_rel, params={"asset_cfg": joint_cfg})
+         joint_torque = ObsTerm(func=joint_applied_torque, params={"asset_cfg": joint_cfg})
          tcp_pos_b = ObsTerm(func=body_pos_b, params={"asset_cfg": tcp_cfg})
-         tcp_quat_b = ObsTerm(func=body_quat_b, params={"asset_cfg": tcp_cfg})
-         eef_pos_b = ObsTerm(func=body_pos_b, params={"asset_cfg": eef_cfg})
-         eef_quat_b = ObsTerm(func=body_quat_b, params={"asset_cfg": eef_cfg})
-         tcp_lin_vel_b = ObsTerm(func=body_lin_vel_b, params={"asset_cfg": tcp_cfg})
-         tcp_ang_vel_b = ObsTerm(func=body_ang_vel_b, params={"asset_cfg": tcp_cfg})
-         eef_lin_vel_b = ObsTerm(func=body_lin_vel_b, params={"asset_cfg": eef_cfg})
-         eef_ang_vel_b = ObsTerm(func=body_ang_vel_b, params={"asset_cfg": eef_cfg})
-         center_camera_rgb = ObsTerm(func=image, params={...})
-         left_camera_rgb = ObsTerm(func=image, params={...})
-         right_camera_rgb = ObsTerm(func=image, params={...})
+         ...
          actions = ObsTerm(func=last_action, params={"action_name": action_name})
-+        joint_torque = ObsTerm(
-+            func=joint_torque_rel,  # add the import at the top of builders.py
++        joint_acc = ObsTerm(
++            func=joint_acc_rel,  # add the import at the top of builders.py
 +            params={"asset_cfg": joint_cfg},
 +        )
 
@@ -249,6 +244,20 @@ should see at inference, append an `ObsTerm` to `PolicyCfg`:
              self.enable_corruption = False
              self.concatenate_terms = False
 ```
+
+If the obs function does not yet exist (as was the case for
+`joint_applied_torque` and `body_incoming_wrench`), that addition
+crosses into the MDP layer — write the helper in
+[`mdp/observations.py`](../aic_task/tasks/manager_based/port_insertion/mdp/observations.py)
+first (this is technically [aic-mdp-term-work](../../../.claude/skills/aic-mdp-term-work/SKILL.md)
+territory), then return here to wire it.
+
+If the obs reads from a body the spec doesn't yet name (as `wrist_wrench`
+needed `ati_tool_link`), add a new role constant + `BodyRoleSpec` to
+[`asset_specs/robots.py`](../aic_task/asset_specs/robots.py) and reach
+for it via `assembly.robot.body_name_for_role(...)` rather than
+hard-coding the body name in the builder — the asset-fact-in-one-place
+invariant from [04_assembly_pattern.md](04_assembly_pattern.md) applies.
 
 Privileged observations (something the policy must NOT see at inference
 but you want recorded for analysis / asymmetric critics) go in
