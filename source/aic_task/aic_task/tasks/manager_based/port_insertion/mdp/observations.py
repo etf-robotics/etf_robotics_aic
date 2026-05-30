@@ -94,6 +94,25 @@ def body_ang_vel_b(
     return ang_b.reshape(env.num_envs, -1)
 
 
+def body_incoming_wrench(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Joint-reaction wrench at each selected body, in that body's local frame.
+
+    Reads ``Articulation.data.body_incoming_joint_wrench_b`` — the 6D wrench
+    ``(Fx, Fy, Fz, Mx, My, Mz)`` the parent joint transmits to each body.
+    The frame is the **body's own local frame** (IsaacLab convention), which
+    matches what a wrist-mounted F/T sensor reports in hardware. This is
+    *different* from the ``_b`` suffix on the pose/velocity helpers above,
+    which means asset-root frame — hence the explicit name without ``_b``.
+    """
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    wrench = _select_body_tensor(asset.data.body_incoming_joint_wrench_b, asset_cfg)
+    return wrench.reshape(env.num_envs, -1)
+
+
 def entrance_pos_b(
     env: ManagerBasedRLEnv,
     command_name: str,
@@ -253,6 +272,7 @@ def _resolve_body_id(asset: Articulation, asset_cfg: SceneEntityCfg, body_name: 
 
 __all__ = [
     "body_ang_vel_b",
+    "body_incoming_wrench",
     "body_lin_vel_b",
     "body_pos_b",
     "body_quat_b",
