@@ -46,6 +46,7 @@ from .mdp.observations import (
     entrance_pos_b,
     entrance_quat_b,
     insertion_fraction,
+    joint_applied_torque,
     seat_pos_b,
     seat_quat_b,
 )
@@ -201,6 +202,7 @@ def build_observation_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, ObsG
     class PolicyCfg(ObsGroup):
         joint_pos = ObsTerm(func=joint_pos_rel, params={"asset_cfg": joint_cfg})
         joint_vel = ObsTerm(func=joint_vel_rel, params={"asset_cfg": joint_cfg})
+        joint_torque = ObsTerm(func=joint_applied_torque, params={"asset_cfg": joint_cfg})
         tcp_pos_b = ObsTerm(func=body_pos_b, params={"asset_cfg": tcp_cfg})
         tcp_quat_b = ObsTerm(func=body_quat_b, params={"asset_cfg": tcp_cfg})
         eef_pos_b = ObsTerm(func=body_pos_b, params={"asset_cfg": eef_cfg})

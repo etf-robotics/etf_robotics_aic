@@ -94,6 +94,23 @@ def body_ang_vel_b(
     return ang_b.reshape(env.num_envs, -1)
 
 
+def joint_applied_torque(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Joint torques applied by the actuator model (N·m, signed per joint).
+
+    Reads ``Articulation.data.applied_torque`` — the post-clip torque the
+    actuator model says it is exerting. For ``ImplicitActuator`` (PD handled
+    by PhysX), IsaacLab recomputes this approximately from the PD law one
+    step late, since PhysX does not expose the exerted joint torque directly.
+    Shape is ``(num_envs, len(asset_cfg.joint_ids))``.
+    """
+
+    asset: Articulation = env.scene[asset_cfg.name]
+    return asset.data.applied_torque[:, asset_cfg.joint_ids]
+
+
 def body_incoming_wrench(
     env: ManagerBasedRLEnv,
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
@@ -278,6 +295,7 @@ __all__ = [
     "body_quat_b",
     "entrance_pos_b",
     "entrance_quat_b",
+    "joint_applied_torque",
     "seat_pos_b",
     "seat_quat_b",
     "insertion_fraction",
