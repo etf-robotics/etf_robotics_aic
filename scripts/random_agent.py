@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Goal-driven agent that drives the TCP toward the insertion-goal entrance pose."""
+"""Goal-driven agent that drives the TCP toward the selected insertion-goal pose."""
 
 import argparse
 import os
@@ -21,19 +21,15 @@ parser.add_argument(
 )
 parser.add_argument(
     "--command_name", type=str, default="insertion_goal",
-    help="Name of the insertion goal command term.",
-)
-parser.add_argument(
-    "--tcp_body", type=str, default="gripper_tcp",
-    help="Robot body the differential IK action controls.",
+    help="Name of the insertion goal command term for marker visualization.",
 )
 parser.add_argument(
     "--eef_body", type=str, default="sfp_tip_link",
-    help="Robot body the insertion goal is expressed for (the plug tip).",
+    help="Robot body to use for EEF marker visualization.",
 )
 parser.add_argument(
     "--markers", action="store_true", default=False,
-    help="Draw frame markers for the TCP, EEF, and insertion goal poses.",
+    help="Draw frame markers for the EEF and insertion goal poses.",
 )
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -59,7 +55,6 @@ from isaaclab.utils.math import (
 from isaaclab_tasks.utils import parse_env_cfg
 
 import aic_task.tasks  # noqa: F401
-# from aic_task.utils.live_camera_stream import attach_default_camera_stream
 
 
 # DiffIK action scales must match the controller spec used at env build time.
@@ -83,10 +78,17 @@ def _resolve_body_index(robot, body_name: str) -> int:
     return int(body_ids[0])
 
 
-def _goal_pose(goal_term, mode: str):
+def _goal_pose_w(goal_term, mode: str):
     if mode == "entrance":
         return goal_term.entrance_pos_w, goal_term.entrance_quat_w
     return goal_term.seat_pos_w, goal_term.seat_quat_w
+
+
+def _goal_pose_b(obs: dict, mode: str):
+    cheatcode = obs["cheatcode"]
+    if mode == "entrance":
+        return cheatcode["entrance_pos_b"], cheatcode["entrance_quat_b"]
+    return cheatcode["seat_pos_b"], cheatcode["seat_quat_b"]
 
 
 def main():
@@ -102,13 +104,9 @@ def main():
     print(f"[INFO]: Gym observation space: {env.observation_space}")
     print(f"[INFO]: Gym action space: {env.action_space}")
 
-    env.reset()
+    obs, _ = env.reset()
 
     unwrapped = env.unwrapped
-    robot = unwrapped.scene["robot"]
-    tcp_idx = _resolve_body_index(robot, args_cli.tcp_body)
-    eef_idx = _resolve_body_index(robot, args_cli.eef_body)
-    goal_term = unwrapped.command_manager.get_term(args_cli.command_name)
 
     scale = torch.tensor(
         [_POS_SCALE, _POS_SCALE, _POS_SCALE, _ROT_SCALE, _ROT_SCALE, _ROT_SCALE],
@@ -117,37 +115,30 @@ def main():
 
     eef_markers = goal_markers = None
     if args_cli.markers:
+        robot = unwrapped.scene["robot"]
+        eef_idx = _resolve_body_index(robot, args_cli.eef_body)
+        goal_term = unwrapped.command_manager.get_term(args_cli.command_name)
         eef_markers = _make_frame_markers("/World/Visuals/RandomAgent/EefFrame")
         goal_markers = _make_frame_markers("/World/Visuals/RandomAgent/GoalFrame")
 
     while simulation_app.is_running():
         with torch.inference_mode():
-            tcp_pos_w = robot.data.body_pos_w[:, tcp_idx, :]
-            tcp_quat_w = robot.data.body_quat_w[:, tcp_idx, :]
-            eef_pos_w = robot.data.body_pos_w[:, eef_idx, :]
-            eef_quat_w = robot.data.body_quat_w[:, eef_idx, :]
-            root_pos_w = robot.data.root_pos_w
-            root_quat_w = robot.data.root_quat_w
+            policy = obs["policy"]
+            tcp_pos_b = policy["tcp_pos_b"]
+            tcp_quat_b = policy["tcp_quat_b"]
+            eef_pos_b = policy["eef_pos_b"]
+            eef_quat_b = policy["eef_quat_b"]
 
-            # Static EEF→TCP offset (rigidly linked, so this is constant).
+            # TCP expressed in the EEF frame, derived from root-frame obs.
             tcp_in_eef_pos, tcp_in_eef_quat = subtract_frame_transforms(
-                eef_pos_w, eef_quat_w, tcp_pos_w, tcp_quat_w
+                eef_pos_b, eef_quat_b, tcp_pos_b, tcp_quat_b
             )
 
-            # Shift the EEF-frame goal by EEF→TCP to get the desired TCP pose.
-            eef_goal_pos_w, eef_goal_quat_w = _goal_pose(goal_term, args_cli.goal)
-            tcp_goal_pos_w, tcp_goal_quat_w = combine_frame_transforms(
-                eef_goal_pos_w, eef_goal_quat_w, tcp_in_eef_pos, tcp_in_eef_quat
-            )
-
-            # DiffIK in pose+relative mode expects the delta in the robot root
-            # frame (see task_space_actions._compute_frame_pose), so express the
-            # current and goal TCP poses in the root frame before differencing.
-            tcp_pos_b, tcp_quat_b = subtract_frame_transforms(
-                root_pos_w, root_quat_w, tcp_pos_w, tcp_quat_w
-            )
-            tcp_goal_pos_b, tcp_goal_quat_b = subtract_frame_transforms(
-                root_pos_w, root_quat_w, tcp_goal_pos_w, tcp_goal_quat_w
+            # Shift the EEF goal by EEF→TCP to get the desired TCP pose, all
+            # expressed in the robot root frame expected by relative DiffIK.
+            eef_goal_pos_b, eef_goal_quat_b = _goal_pose_b(obs, args_cli.goal)
+            tcp_goal_pos_b, tcp_goal_quat_b = combine_frame_transforms(
+                eef_goal_pos_b, eef_goal_quat_b, tcp_in_eef_pos, tcp_in_eef_quat
             )
 
             pos_err, rot_err = compute_pose_error(
@@ -160,10 +151,13 @@ def main():
             action = action.clamp(-1.0, 1.0)
 
             if eef_markers is not None:
+                eef_pos_w = robot.data.body_pos_w[:, eef_idx, :]
+                eef_quat_w = robot.data.body_quat_w[:, eef_idx, :]
+                eef_goal_pos_w, eef_goal_quat_w = _goal_pose_w(goal_term, args_cli.goal)
                 eef_markers.visualize(translations=eef_pos_w, orientations=eef_quat_w)
                 goal_markers.visualize(translations=eef_goal_pos_w, orientations=eef_goal_quat_w)
 
-            env.step(action)
+            obs, _, _, _, _ = env.step(action)
 
     env.close()
 
