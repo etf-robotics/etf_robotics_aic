@@ -20,6 +20,7 @@ Multi-env, time-parameterized, open-loop. Each episode:
 
 import argparse
 import os
+import signal
 import sys
 from pathlib import Path
 
@@ -110,26 +111,49 @@ def main():
         task=args_cli.task_label,
     )
 
-    while simulation_app.is_running():
-        with torch.inference_mode():
-            action, _ = executor.step(obs)
-            # Record (s_t, a_t) BEFORE stepping; env.step overwrites obs with s_{t+1}.
-            writer.record(obs, action)
-            obs, _, terminated, truncated, _ = env.step(action)
+    # Cooperative SIGINT: relying on KeyboardInterrupt races against
+    # Isaac's own signal handler, which can hard-exit before our finally
+    # runs. Flag-and-poll guarantees the loop exits at a known point so
+    # the dataset can be finalized.
+    stop_requested = {"flag": False}
 
-            done = (terminated | truncated).nonzero(as_tuple=False).flatten()
-            if done.numel() > 0:
-                # `success` fires only on success terminations — failed_stationary
-                # and time_out leave it False, so their buffers get dropped.
-                success_mask = env.unwrapped.termination_manager.get_term("success")
-                writer.commit(done, success_mask)
-                # `obs` for `done` envs is already the post-reset obs
-                # (ManagerBasedRLEnv auto-resets inside step), so we can
-                # re-plan straight from it.
-                executor.reset_plan(done, obs)
+    def _request_stop(signum, frame):  # noqa: ARG001
+        stop_requested["flag"] = True
+        print(
+            "[collect_demos]: SIGINT received — will stop after this step.",
+            file=sys.stderr,
+            flush=True,
+        )
 
-    writer.close()
-    env.close()
+    signal.signal(signal.SIGINT, _request_stop)
+
+    try:
+        while simulation_app.is_running() and not stop_requested["flag"]:
+            with torch.inference_mode():
+                action, info = executor.step(obs)
+                # Record (s_t, a_t, phase_t) BEFORE stepping; env.step overwrites obs with s_{t+1}.
+                # `info["phase"]` is the planner's per-env phase the action was emitted under.
+                writer.record(obs, action, info["phase"])
+                obs, _, terminated, truncated, _ = env.step(action)
+
+                done = (terminated | truncated).nonzero(as_tuple=False).flatten()
+                if done.numel() > 0:
+                    # `success` fires only on success terminations — failed_stationary
+                    # and time_out leave it False, so their buffers get dropped.
+                    success_mask = env.unwrapped.termination_manager.get_term("success")
+                    writer.commit(done, success_mask)
+                    # `obs` for `done` envs is already the post-reset obs
+                    # (ManagerBasedRLEnv auto-resets inside step), so we can
+                    # re-plan straight from it.
+                    executor.reset_plan(done, obs)
+    except KeyboardInterrupt:
+        # Fallback path: if SIGINT arrived before our handler was installed
+        # or another path raised KeyboardInterrupt, still finalize cleanly.
+        print("[collect_demos]: KeyboardInterrupt — finalizing dataset.", file=sys.stderr, flush=True)
+    finally:
+        writer.close()
+        env.close()
+        print("[collect_demos]: shutdown complete — safe to close terminal.", file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":

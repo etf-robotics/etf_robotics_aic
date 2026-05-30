@@ -24,6 +24,7 @@ incrementing its episode indices instead of creating a fresh run.
 from __future__ import annotations
 
 import re
+import sys
 import time
 from pathlib import Path
 
@@ -33,6 +34,11 @@ from .env_wrapper import PortInsertionEnv
 
 _POLICY_GROUP = "policy"
 _RUN_RE = re.compile(r"^(\d{3})_")
+
+
+def _log(msg: str) -> None:
+    """Stderr, line-flushed. Kit eats stdout on teardown — stderr survives."""
+    print(f"[writer]: {msg}", file=sys.stderr, flush=True)
 
 
 class PortInsertionWriter:
@@ -73,6 +79,15 @@ class PortInsertionWriter:
                 "shape": (state_dim,),
                 "names": list(self._state_keys),
             },
+            "annotation.phase": {
+                # Training-time label, NOT a policy input — at inference there
+                # is no planner to provide a phase. One-hot per frame
+                # (0=APPROACH, 1=ALIGN, 2=INSERT) so it can drive an auxiliary
+                # loss head, dataset filtering, or per-phase loss weighting.
+                "dtype": "float32",
+                "shape": (3,),
+                "names": ["APPROACH", "ALIGN", "INSERT"],
+            },
             "action": {
                 "dtype": "float32",
                 "shape": (action_dim,),
@@ -99,7 +114,7 @@ class PortInsertionWriter:
         if append and existing:
             run_dir = existing[-1]
             self._dataset = LeRobotDataset(repo_id=run_dir.name, root=run_dir)
-            print(f"[writer]: appending to existing run {run_dir.name}")
+            _log(f"appending to existing run {run_dir.name}")
         else:
             next_idx = int(_RUN_RE.match(existing[-1].name).group(1)) + 1 if existing else 1
             run_name = f"{next_idx:03d}_{time.strftime('%Y%m%d-%H%M%S')}"
@@ -111,16 +126,26 @@ class PortInsertionWriter:
                 features=features,
                 use_videos=True,
             )
-            print(f"[writer]: creating new run {run_name} at {run_dir} (fps={fps}, state_dim={state_dim})")
+            _log(f"creating new run {run_name} at {run_dir} (fps={fps}, state_dim={state_dim})")
 
+        self._run_dir = run_dir
         self._buffers: list[list[dict]] = [[] for _ in range(self._num_envs)]
+        self._saved_episodes = 0
+        self._saved_frames = 0
 
-    def record(self, obs: dict, action: torch.Tensor) -> None:
-        """Append ``(s_t, a_t)`` for every env to its in-flight buffer."""
+    def record(self, obs: dict, action: torch.Tensor, phase: torch.Tensor) -> None:
+        """Append ``(s_t, a_t, phase_t)`` for every env to its in-flight buffer.
+
+        ``phase`` is an ``int8/int64`` tensor of shape ``(num_envs,)`` with
+        values in ``{0=APPROACH, 1=ALIGN, 2=INSERT}``. It is one-hot encoded
+        into a ``float32[3]`` row so a LeRobot policy can consume it as input.
+        """
         policy = obs[_POLICY_GROUP]
         state = torch.cat([policy[k] for k in self._state_keys], dim=-1)
         state_np = state.detach().to(dtype=torch.float32, device="cpu").numpy()
         action_np = action.detach().to(dtype=torch.float32, device="cpu").numpy()
+        phase_onehot = torch.nn.functional.one_hot(phase.detach().to(torch.long), num_classes=3)
+        phase_np = phase_onehot.to(dtype=torch.float32, device="cpu").numpy()
         images_np = {
             feat: policy[k].detach().to(device="cpu").contiguous().numpy()
             for k, feat in self._image_features.items()
@@ -128,6 +153,7 @@ class PortInsertionWriter:
         for i in range(self._num_envs):
             frame = {
                 "observation.state": state_np[i],
+                "annotation.phase": phase_np[i],
                 "action": action_np[i],
                 "task": self._task,
             }
@@ -142,12 +168,40 @@ class PortInsertionWriter:
         for eid in ids:
             buf = self._buffers[eid]
             if success[eid] and buf:
+                n_frames = len(buf)
                 for frame in buf:
                     self._dataset.add_frame(frame)
                 self._dataset.save_episode()
+                self._saved_episodes += 1
+                self._saved_frames += n_frames
+                _log(
+                    f"saved episode {self._saved_episodes - 1} from env {eid} "
+                    f"({n_frames} frames) — totals: {self._saved_episodes} eps / "
+                    f"{self._saved_frames} frames"
+                )
+            elif buf:
+                _log(f"dropped env {eid} buffer ({len(buf)} frames, success=False)")
             self._buffers[eid] = []
 
     def close(self) -> None:
-        """Drop any in-flight buffers. Successful episodes are already on disk."""
+        """Drop in-flight buffers and finalize the LeRobot dataset.
+
+        `LeRobotDataset.finalize()` flushes the parquet footers. Without it
+        the data/episodes parquet files are left footerless and the dataset
+        cannot be reopened.
+        """
+        dropped = sum(len(b) for b in self._buffers)
+        if dropped:
+            _log(f"dropping {dropped} in-flight frames across in-progress envs")
         for i in range(self._num_envs):
             self._buffers[i] = []
+
+        _log(f"finalizing dataset (flushing parquet footers)...")
+        t0 = time.monotonic()
+        self._dataset.finalize()
+        dt = time.monotonic() - t0
+        _log(
+            f"FINALIZED in {dt:.2f}s — {self._saved_episodes} episodes, "
+            f"{self._saved_frames} frames at {self._run_dir}"
+        )
+        _log("dataset is safe to read now.")
