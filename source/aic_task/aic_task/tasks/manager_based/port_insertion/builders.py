@@ -28,6 +28,7 @@ from aic_task.asset_specs import (
     AssetSpec,
     CameraFrameSpec,
     ROBOT_ROLE_EEF,
+    ROBOT_ROLE_WRIST_FT,
     RobotAssetSpec,
     SceneLayoutSpec,
     SceneSlotSpec,
@@ -185,6 +186,7 @@ def build_observation_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, ObsG
     joint_names = list(assembly.robot.joint_group(assembly.controller.joint_group).joint_names)
     tcp_body = assembly.robot.body_name_for_role(assembly.controller.controlled_body_role)
     eef_body = assembly.robot.body_name_for_role(ROBOT_ROLE_EEF)
+    wrist_ft_body = assembly.robot.body_name_for_role(ROBOT_ROLE_WRIST_FT)
     action_name = assembly.controller.action_name
     command_name = assembly.goal.command_name
     lateral_threshold_m = assembly.observation.insertion_lateral_threshold_m
@@ -192,7 +194,7 @@ def build_observation_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, ObsG
     joint_cfg = SceneEntityCfg(robot_name, joint_names=joint_names)
     tcp_cfg = SceneEntityCfg(robot_name, body_names=[tcp_body])
     eef_cfg = SceneEntityCfg(robot_name, body_names=[eef_body])
-    wrist_wrench_cfg = SceneEntityCfg(robot_name, body_names=["ati_tool_link"])
+    wrist_ft_cfg = SceneEntityCfg(robot_name, body_names=[wrist_ft_body])
     robot_root_cfg = SceneEntityCfg(robot_name)
 
     @configclass
@@ -207,7 +209,7 @@ def build_observation_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, ObsG
         tcp_ang_vel_b = ObsTerm(func=body_ang_vel_b, params={"asset_cfg": tcp_cfg})
         eef_lin_vel_b = ObsTerm(func=body_lin_vel_b, params={"asset_cfg": eef_cfg})
         eef_ang_vel_b = ObsTerm(func=body_ang_vel_b, params={"asset_cfg": eef_cfg})
-        wrist_wrench = ObsTerm(func=body_incoming_wrench, params={"asset_cfg": wrist_wrench_cfg})
+        wrist_wrench = ObsTerm(func=body_incoming_wrench, params={"asset_cfg": wrist_ft_cfg})
         center_camera_rgb = ObsTerm(
             func=image,
             params={

@@ -22,6 +22,7 @@ from .base import (
 from .robots import (
     ROBOT_ROLE_EEF,
     ROBOT_ROLE_TCP,
+    ROBOT_ROLE_WRIST_FT,
     UR5E_ARM_ACTUATOR,
     UR5E_ARM_JOINT_GROUP,
     UR5E_CABLE_ASSET,
@@ -85,6 +86,7 @@ __all__ = [
     "Quaternion",
     "ROBOT_ROLE_EEF",
     "ROBOT_ROLE_TCP",
+    "ROBOT_ROLE_WRIST_FT",
     "RobotAssetSpec",
     "RobotSpawnSpec",
     "SCENE_SLOT_BOARD",

@@ -19,6 +19,7 @@ from .base import (
 
 ROBOT_ROLE_TCP = "tcp"
 ROBOT_ROLE_EEF = "eef"
+ROBOT_ROLE_WRIST_FT = "wrist_ft"
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,11 @@ UR5E_CABLE_ASSET = RobotAssetSpec(
             role=ROBOT_ROLE_EEF,
             body_name="sfp_tip_link",
             purpose="physical insertion tip used for goals and terminations",
+        ),
+        BodyRoleSpec(
+            role=ROBOT_ROLE_WRIST_FT,
+            body_name="ati_tool_link",
+            purpose="6D F/T sensor mount — source of the wrist wrench observation",
         ),
     ),
     camera_frames=(
