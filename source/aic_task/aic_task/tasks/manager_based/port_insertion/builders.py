@@ -288,7 +288,7 @@ def build_event_cfg(assembly: PortInsertionAssemblySpec) -> dict[str, EventTerm]
             mode="reset",
             params={
                 "asset_cfg": SceneEntityCfg(robot_slot_name),
-                "position_range": (-0.3, 0.3),
+                "position_range": (0.0, 0.0),
                 "velocity_range": (0.0, 0.0),
             },
         ),

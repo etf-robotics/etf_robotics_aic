@@ -86,7 +86,7 @@ UR5E_ARM_JOINT_GROUP = JointGroupSpec(
         "elbow_joint": -1.6648,
         "wrist_1_joint": -1.6933,
         "wrist_2_joint": 1.5710,
-        "wrist_3_joint": 1.4110,
+        "wrist_3_joint": -1.7306,
     },
 )
 

@@ -136,7 +136,7 @@ NIC_PORT_0_INSERTION_GOAL = InsertionGoalSpec(
     target_slot=SCENE_SLOT_TARGET,
     port_name="sfp_port_0",
     eef_pose_in_port_frame=PoseSpec(
-        pos=(0.0, 0.0, 0.001),
+        pos=(0.0, 0.0, 0.0013),
         rot=(math.sqrt(0.5), math.sqrt(0.5), 0.0, 0.0),
     ),
     resampling_time_range=(1.0e9, 1.0e9 + 1.0),
@@ -149,7 +149,7 @@ AIC_PORT_INSERTION_TERMINATION = PortInsertionTerminationSpec(
     success_required_seconds=0.5,
     stationary_movement_threshold=0.001,
     stationary_success_position_threshold=0.003,
-    stationary_required_seconds=1.0,
+    stationary_required_seconds=3.0,
 )
 
 AIC_PORT_INSERTION_OBSERVATION = PortInsertionObservationSpec(
