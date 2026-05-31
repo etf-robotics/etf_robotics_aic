@@ -10,6 +10,7 @@ environment prep needed inside the `isaac-lab-base` container.
 |---|---|
 | [`scripts/il/writer.py`](writer.py) | `PortInsertionWriter`: per-env frame buffers, success-only commit, LeRobot v3 dataset on disk. |
 | [`scripts/collect_demos.py`](../collect_demos.py) | Replaces the previous `# TODO(writer)` stubs with `writer.record(...)` / `writer.commit(...)` / `writer.close()`. Adds `--out_dir`, `--append`, `--task_label` CLI flags. |
+| [`scripts/view_demos.py`](../view_demos.py) | Thin wrapper around `lerobot-dataset-viz` that resolves the latest `NNN_*` run, picks an episode, and produces a Rerun `.rrd` file you can open on the host. |
 
 No changes to the task definition under `source/aic_task/`. The success
 mask comes from the named termination term already in
@@ -131,6 +132,80 @@ auto-increment and reopens the highest-numbered run.
   `PortInsertionWriter._state_keys` (and the LeRobot `features` dict) if
   you need them for asymmetric critics.
 
+## Viewing the dataset
+
+### Quick path: synchronized cameras + state + action in Rerun
+
+The repo ships [`scripts/view_demos.py`](../view_demos.py), a thin
+wrapper around lerobot's bundled `lerobot-dataset-viz`. It picks the
+most recent run, runs the viz in headless save-mode, writes a Rerun
+`.rrd` file, and chowns it back to the host user.
+
+```bash
+# Inside the container — produce the .rrd
+docker exec -w /workspace/isaaclab isaac-lab-base \
+  ./isaaclab.sh -p etf_robotics_aic/scripts/view_demos.py --episode 0
+```
+
+The output lands at:
+
+```
+datasets/port_insertion/<run>/viz/<run>_episode_0.rrd
+```
+
+Open it on the host with the Rerun viewer:
+
+```bash
+pip install rerun-sdk      # once
+rerun datasets/port_insertion/<run>/viz/<run>_episode_0.rrd
+```
+
+Rerun gives you the three camera streams playing in sync with the
+56-dim state, the 6-dim action, and the per-phase one-hot — scrub the
+timeline, zoom plots, isolate a single camera, etc.
+
+Other modes:
+
+- `--episode N` to pick an episode index.
+- `--run NNN_<timestamp>` to target a specific run.
+- `--mode local` to spawn the Rerun viewer directly (needs X11 into the
+  container).
+- `--mode distant --grpc_port 9876` to serve over gRPC; connect from the
+  host with `rerun rerun+http://localhost:9876/proxy` (port-mapped via
+  the container's compose stack).
+
+### File-by-file fallbacks
+
+You don't need Rerun to inspect the data:
+
+- **Videos**: `videos/observation.images.{center,left,right}/chunk-000/file-*.mp4`
+  play in vlc/mpv/xdg-open. They concatenate every successful episode
+  for that camera back-to-back.
+- **Low-dim columns**: `data/chunk-000/file-*.parquet`. Open with pandas
+  / pyarrow / duckdb. Columns include `observation.state` (56,),
+  `action` (6,), `annotation.phase` (3,), `episode_index`,
+  `frame_index`, `timestamp`, `task_index`.
+- **Per-episode frame ranges**: `meta/episodes.parquet` (length per
+  episode) lets you slice the concatenated mp4s by frame index.
+- **Programmatic loader**: `LeRobotDataset(repo_id=run.name, root=run)`
+  gives a torch-style `__getitem__` that decodes mp4 frames into tensors
+  for you — pair it with the writer's `_state_keys` list to split
+  `observation.state` back into named subvectors.
+
+### Permissions footgun
+
+Episodes are written by the container as `root:root`. The host user
+can't read them by default. One-time fix after each collection run:
+
+```bash
+docker exec isaac-lab-base \
+  chown -R 1000:1000 /workspace/isaaclab/etf_robotics_aic/datasets/port_insertion
+```
+
+(`1000` = your host UID; check with `id -u`.) `view_demos.py` chowns
+its own output (`viz/*.rrd`) automatically so the loop above only needs
+to be run after a `collect_demos.py` session.
+
 ## Environment prep — read before installing lerobot
 
 The container ships with isaaclab pinned to `numpy<2`; `lerobot` (>= 0.4)
@@ -174,12 +249,29 @@ docker exec -w /workspace/isaaclab isaac-lab-base \
   ./isaaclab.sh -p -m pip install "numpy<2"
 ```
 
-Then verify both stacks still import:
+**(c) torchcodec must match isaac-sim's torch.** lerobot pulls in
+`torchcodec` (it's the default video decoder for `LeRobotDataset`).
+The latest torchcodec is built against torch ≥ 2.10; isaac-sim ships
+torch 2.7, so importing the bundled torchcodec dies with
+`undefined symbol: _ZN3c1013MessageLogger6streamB5cxx11Ev`. Pin to the
+0.4.x line, which matches torch 2.7's ABI:
+
+```bash
+docker exec -w /workspace/isaaclab isaac-lab-base \
+  ./isaaclab.sh -p -m pip install "torchcodec==0.4.0"
+```
+
+This is only needed for **reading** the dataset (training, viz). The
+writer doesn't touch torchcodec, so you can skip step (c) on a collector
+machine if you only ever produce data there.
+
+Then verify all four stacks still import:
 
 ```bash
 docker exec -w /workspace/isaaclab isaac-lab-base ./isaaclab.sh -p -c "
 import numpy, torch, isaaclab
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from torchcodec.decoders import VideoDecoder
 print('numpy', numpy.__version__, 'torch', torch.__version__, 'OK')"
 ```
 
