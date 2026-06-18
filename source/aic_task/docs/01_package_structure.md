@@ -45,6 +45,7 @@ source/aic_task/
     ├── extension.py           Isaac Sim UI extension; only active inside the Sim UI
     ├── assets/                Raw USD assets (pure data, no Python)
     │   ├── robots/ur5e_cable/aic_unified_robot_cable_sdf.usd
+    │   │   └── visuals/       Connector meshes referenced by the robot USD (.glb source + .usd loaded; see 07)
     │   ├── targets/nic_card/nic_card.usd
     │   ├── targets/sc_port/sc_port.usd
     │   ├── workcells/aic/aic.usd
