@@ -11,6 +11,7 @@ environment prep needed inside the `isaac-lab-base` container.
 | [`scripts/il/writer.py`](writer.py) | `PortInsertionWriter`: per-env frame buffers, success-only commit, LeRobot v3 dataset on disk. |
 | [`scripts/collect_demos.py`](../collect_demos.py) | Replaces the previous `# TODO(writer)` stubs with `writer.record(...)` / `writer.commit(...)` / `writer.close()`. Adds `--out_dir`, `--append`, `--task_label` CLI flags. |
 | [`scripts/view_demos.py`](../view_demos.py) | Thin wrapper around `lerobot-dataset-viz` that resolves the latest `NNN_*` run, picks an episode, and produces a Rerun `.rrd` file you can open on the host. |
+| [`scripts/train_demos.py`](../train_demos.py) | Wrapper around `lerobot.scripts.lerobot_train` that swaps in a phase-aware ACT subclass: action L1 + KLD + auxiliary cross-entropy on `annotation.phase`. The aux head trains during forward but is never read at `select_action()` — eval and deployment are byte-identical to vanilla ACT. |
 
 No changes to the task definition under `source/aic_task/`. The success
 mask comes from the named termination term already in
