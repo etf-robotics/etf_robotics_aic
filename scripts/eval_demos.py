@@ -38,6 +38,7 @@ Example (live GUI, watch the policy run):
 """
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -54,6 +55,34 @@ _DEFAULT_CKPT = str(
     / "checkpoints" / "100000" / "pretrained_model"
 )
 _DEFAULT_EVAL_DIR = str(_SCRIPT_DIR.parent / "outputs" / "eval")
+
+# The committed cable USD references its three tip-connector visuals as `.glb`,
+# but this Isaac Sim install has no glTF file-format plugin, so those refs never
+# resolve and the cable tip renders bare. Sibling `.usd` conversions exist next
+# to each `.glb` (scale/material/normals already fixed on disk). We retarget the
+# refs to the `.usd` at load time, *in memory only* — the on-disk cable USD stays
+# byte-identical (it is git-LFS-misconfigured and must not be modified).
+_CABLE_USD = (
+    _SCRIPT_DIR.parent
+    / "source" / "aic_task" / "aic_task" / "assets" / "robots" / "ur5e_cable"
+    / "aic_unified_robot_cable_sdf.usd"
+)
+_CONNECTOR_VISUALS = ("lc_plug_visual", "sc_plug_visual", "sfp_module_visual")
+# The cable USD bakes a *partial* sfp mesh directly onto this prim (only the sfp
+# connector has it; lc/sc are reference-only). Those baked geom attrs are authored
+# in the cable root layer, so they OVERRIDE the full mesh from the referenced
+# `.usd` → the rendered sfp is missing parts. We delete them in memory so the full
+# referenced geometry (8126 pts vs the baked 2457) composes through.
+_SFP_BAKED_BODY = "/World/cable/sfp_module/sfp_module_link/visual/Body_005"
+_SFP_BAKED_ATTRS = (
+    "points", "faceVertexCounts", "faceVertexIndices",
+    "primvars:st", "primvars:st:indices", "normals", "extent",
+)
+# Hold the patched Sdf.Layer ref alive for the whole process: USD layers are
+# refcounted, and if the only handle is dropped before the env composes the robot
+# USD the layer is evicted and reloaded from disk (original `.glb` refs), silently
+# undoing the retarget.
+_KEEP_ALIVE_LAYERS: list = []
 
 # Order MUST match scripts/il/writer.py's policy-group iteration order at
 # collection time. If you change the obs schema there, mirror it here.
@@ -111,6 +140,11 @@ parser.add_argument("--temporal_ensemble_coeff", type=float, default=0.01,
                          "predictions (exp-weighted, wᵢ=exp(-coeff*i)) — this is the reactive, closed-loop "
                          "ACT mode and the default here. It forces n_action_steps=1. Pass 0 (or negative) "
                          "to fall back to the checkpoint's own n_action_steps (open-loop action chunking).")
+parser.add_argument("--no_connector_retarget", action="store_true",
+                    help="Skip the in-memory .glb->.usd swap that makes the cable-tip connector render. "
+                         "The demo dataset was recorded connector-less (bare tip), so with this flag the "
+                         "policy cameras see the SAME bare tip they were trained on — use it to eliminate "
+                         "the train/eval visual mismatch when the rendered connector tanks success.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -140,9 +174,9 @@ import aic_task.tasks  # noqa: F401
 
 from il.env_wrapper import PortInsertionEnv
 
-# Importing this only registers the class; the factory monkey-patch isn't
-# triggered (it lives inside main() in train_demos.py).
-from train_demos import ACTPolicyWithPhaseHead
+# The concrete policy subclass (ACT vs Diffusion) is imported lazily in main()
+# based on the checkpoint's config.json "type", so this script evaluates any
+# checkpoint produced by train_demos.py (act) or train_dp_demos.py (diffusion).
 
 from lerobot.processor.pipeline import DataProcessorPipeline
 from lerobot.processor.converters import (
@@ -179,26 +213,98 @@ def _isaac_to_lerobot_batch(obs: dict, device: torch.device | str) -> dict:
 def _progress_metrics(obs: dict):
     """Per-env insertion progress from the privileged ``cheatcode`` obs group.
 
-    Returns ``(insertion_fraction, tcp_to_seat_dist_m)``, each shape ``(N,)``,
-    or ``(None, None)`` if the cheatcode group / required terms aren't present.
+    Returns ``(insertion_fraction, tip_to_seat_dist_m, axis_offset_m)``, each
+    shape ``(N,)``, or ``(None, None, None)`` if the cheatcode group / required
+    terms aren't present.
 
     - ``insertion_fraction``: the env's perpendicular-gated 0..1 progress scalar
       (1.0 = fully seated, 0.0 = at/behind the entrance or laterally off-axis).
-    - distance: Euclidean TCP->seat error in the robot base frame, in metres —
-      the raw "how far from the hole did it get" number.
+    - ``tip_to_seat_dist``: Euclidean error from the connector tip
+      (``sfp_tip_link``) to its seated target in the robot base frame, in metres
+      — the raw "how far is the tip from the port bottom" number, which goes to
+      ~0 on a clean insertion. (We measure the EEF tip, not the IK-controlled
+      ``gripper_tcp``, so this is consistent with the success /
+      ``insertion_fraction`` terms.)
+    - ``axis_offset``: perpendicular distance of the tip from the port's vertical
+      insertion axis (the entrance->seat line), in metres. This is "how far the
+      tip is from being centred on the port opening (top-surface centre)",
+      independent of how deep it is — i.e. the lateral mis-alignment to the port
+      axis.
 
     These are read for *reporting only*; they never touch the policy input, so
     eval stays an honest closed-loop test (the policy still sees only ``policy``
     group obs).
     """
     cheat = obs.get("cheatcode")
-    if cheat is None or "insertion_fraction" not in cheat or "seat_pos_b" not in cheat:
-        return None, None
+    if (
+        cheat is None
+        or "insertion_fraction" not in cheat
+        or "seat_pos_b" not in cheat
+        or "entrance_pos_b" not in cheat
+    ):
+        return None, None, None
     frac = cheat["insertion_fraction"].reshape(-1).float()
-    seat = cheat["seat_pos_b"]          # (N, 3) base frame
-    tcp = obs["policy"]["tcp_pos_b"]    # (N, 3) base frame
-    dist = torch.linalg.norm(seat - tcp, dim=-1).float()
-    return frac, dist
+    seat = cheat["seat_pos_b"]              # (N, 3) base frame: tip's seated target (port bottom)
+    entrance = cheat["entrance_pos_b"]      # (N, 3) base frame: port mouth / top-surface centre
+    tip = obs["policy"]["eef_pos_b"]        # (N, 3) base frame: sfp_tip_link (connector tip)
+    dist = torch.linalg.norm(seat - tip, dim=-1).float()
+    # Lateral (off-axis) miss: perpendicular distance of the tip from the port's
+    # vertical insertion axis (entrance->seat). Decompose (tip - entrance) into
+    # axial + perpendicular parts; the perpendicular norm is the alignment error.
+    axis = seat - entrance
+    axis = axis / axis.norm(dim=-1, keepdim=True).clamp_min(1e-9)
+    v = tip - entrance
+    perp = v - (v * axis).sum(dim=-1, keepdim=True) * axis
+    lateral = perp.norm(dim=-1).float()
+    return frac, dist, lateral
+
+
+def _retarget_connectors_to_usd() -> None:
+    """Swap the cable's bare ``.glb`` connector refs to their ``.usd`` siblings.
+
+    Done in memory on the cached ``Sdf.Layer`` and **not saved**: when the env
+    composes the robot USD (which references this cable layer) USD reuses this same
+    in-RAM layer, so the connectors load at composition time — while the on-disk
+    file stays byte-identical. The ``.usd`` connectors have already been fixed on
+    disk (0.01 unit scale, materials bound, normals cleaned), so they load at the
+    correct ~5 cm size and render bright. Must run after ``AppLauncher`` and before
+    the env is built. No-op (with a warning) if a layer / ``.usd`` sibling is missing.
+    """
+    from pxr import Sdf
+
+    if not _CABLE_USD.is_file():
+        print(f"[eval]: cable USD not found at {_CABLE_USD}; skipping connector retarget.",
+              file=sys.stderr)
+        return
+    layer = Sdf.Layer.FindOrOpen(str(_CABLE_USD))
+    if layer is None:
+        print(f"[eval]: could not open cable layer {_CABLE_USD}; skipping connector retarget.",
+              file=sys.stderr)
+        return
+    _KEEP_ALIVE_LAYERS.append(layer)  # see note on _KEEP_ALIVE_LAYERS above
+    swapped = []
+    for stem in _CONNECTOR_VISUALS:
+        glb, usd = f"./visuals/{stem}.glb", f"./visuals/{stem}.usd"
+        if not (_CABLE_USD.parent / "visuals" / f"{stem}.usd").is_file():
+            print(f"[eval]: missing {usd}; leaving {glb} ref (connector will be bare).",
+                  file=sys.stderr)
+            continue
+        layer.UpdateCompositionAssetDependency(glb, usd)
+        swapped.append(stem)
+    if swapped:
+        print(f"[eval]: retargeted connector visuals .glb->.usd in memory: {', '.join(swapped)}",
+              file=sys.stderr)
+
+    # Drop the cable USD's baked partial-sfp override so the full referenced mesh shows.
+    body = layer.GetPrimAtPath(_SFP_BAKED_BODY)
+    if body is not None:
+        removed = [p.name for p in list(body.properties) if p.name in _SFP_BAKED_ATTRS]
+        for prop in list(body.properties):
+            if prop.name in _SFP_BAKED_ATTRS:
+                body.RemoveProperty(prop)
+        if removed:
+            print(f"[eval]: stripped baked sfp Body_005 override ({', '.join(removed)}) "
+                  f"so the full connector mesh renders.", file=sys.stderr)
 
 
 _OVERVIEW_CAM = "overview_camera"
@@ -296,6 +402,16 @@ def _chown_to_host(path: Path, uid: int = 1000, gid: int = 1000) -> None:
 
 
 def main() -> None:
+    # Make the cable's tip connectors actually render (in-memory .glb->.usd swap);
+    # must happen before the env composes the robot USD below. Skipped with
+    # --no_connector_retarget so the tip renders bare, matching the (connector-less)
+    # demo dataset the policy was trained on.
+    if args_cli.no_connector_retarget:
+        print("[eval]: --no_connector_retarget set; leaving cable tip bare (matches training data).",
+              file=sys.stderr)
+    else:
+        _retarget_connectors_to_usd()
+
     # Add the third-person overview camera only when we're actually saving
     # videos and the user hasn't opted out — it costs an extra render pass.
     want_overview = args_cli.save_videos and not args_cli.no_overview
@@ -319,13 +435,28 @@ def main() -> None:
     device = env.device
 
     print(f"[eval]: loading policy from {args_cli.ckpt}", file=sys.stderr)
-    policy = ACTPolicyWithPhaseHead.from_pretrained(args_cli.ckpt)
-    # Default to closed-loop temporal ensembling regardless of how the checkpoint
-    # was trained. The original ACT inference re-queries the net every step and
-    # blends overlapping chunk predictions — far more robust for contact-rich
-    # insertion than committing to a full chunk open-loop. Build the ensembler
-    # even if the ckpt's config carried `temporal_ensemble_coeff=None`.
-    if args_cli.temporal_ensemble_coeff and args_cli.temporal_ensemble_coeff > 0:
+    # Pick the concrete subclass from the checkpoint's own config so the saved
+    # phase_head weights load cleanly (loading a diffusion ckpt into the ACT
+    # class — or vice versa — would mismatch the architecture).
+    policy_type = json.load(open(os.path.join(args_cli.ckpt, "config.json")))["type"]
+    if policy_type == "act":
+        from train_demos import ACTPolicyWithPhaseHead
+        policy = ACTPolicyWithPhaseHead.from_pretrained(args_cli.ckpt)
+    elif policy_type == "diffusion":
+        from train_dp_demos import DiffusionPolicyWithPhaseHead
+        policy = DiffusionPolicyWithPhaseHead.from_pretrained(args_cli.ckpt)
+    else:
+        raise ValueError(f"Unsupported policy type {policy_type!r} in {args_cli.ckpt}/config.json")
+    print(f"[eval]: policy type = {policy_type}", file=sys.stderr)
+
+    # Temporal ensembling is an ACT-only inference mode: it re-queries the net
+    # every step and blends overlapping chunk predictions (relies on chunk_size /
+    # temporal_ensemble_coeff). It's far more robust for contact-rich insertion
+    # than committing to a chunk open-loop, so it stays the ACT default. Diffusion
+    # Policy has no chunk ensembler — it does closed-loop receding-horizon control
+    # via its own obs/action queues (n_obs_steps in, n_action_steps executed) — so
+    # we leave its trained config untouched.
+    if policy_type == "act" and args_cli.temporal_ensemble_coeff and args_cli.temporal_ensemble_coeff > 0:
         from lerobot.policies.act.modeling_act import ACTTemporalEnsembler
         policy.config.temporal_ensemble_coeff = args_cli.temporal_ensemble_coeff
         policy.config.n_action_steps = 1
@@ -334,9 +465,13 @@ def main() -> None:
         )
         print(f"[eval]: temporal ensembling ON (coeff={args_cli.temporal_ensemble_coeff}, "
               f"n_action_steps=1, chunk_size={policy.config.chunk_size}).", file=sys.stderr)
-    else:
+    elif policy_type == "act":
         print(f"[eval]: temporal ensembling OFF — open-loop chunking with "
               f"n_action_steps={policy.config.n_action_steps}.", file=sys.stderr)
+    else:
+        print(f"[eval]: diffusion receding-horizon control "
+              f"(n_obs_steps={policy.config.n_obs_steps}, n_action_steps={policy.config.n_action_steps}).",
+              file=sys.stderr)
     policy.to(device).eval()
 
     preprocessor = DataProcessorPipeline.from_pretrained(
@@ -357,9 +492,11 @@ def main() -> None:
 
     # Per-episode metrics, written incrementally (flushed each episode) so a
     # long run still yields usable stats if it's interrupted. One row per
-    # rollout; `closest_mm` is blank if the privileged cheatcode obs is absent.
+    # rollout; `closest_mm` / `axis_offset_mm` are blank if the privileged
+    # cheatcode obs is absent. `axis_offset_mm` is the tip's lateral miss from
+    # the port axis sampled at the closest-approach step (see below).
     metrics_csv = (eval_dir / "metrics.csv").open("w")
-    metrics_csv.write("episode,env,outcome,length,best_insert,closest_mm\n")
+    metrics_csv.write("episode,env,outcome,length,best_insert,closest_mm,axis_offset_mm\n")
     metrics_csv.flush()
 
     obs, _ = env.reset(seed=args_cli.seed)
@@ -379,12 +516,17 @@ def main() -> None:
     n_timeout = 0
     ep_lengths: list[int] = []
     ep_best_frac: list[float] = []   # per-episode max insertion_fraction reached
-    ep_min_dist: list[float] = []    # per-episode min TCP->seat distance (m)
+    ep_min_dist: list[float] = []    # per-episode min tip->seat distance (m)
+    ep_axis_offset: list[float] = [] # per-episode tip off-axis dist at closest approach (m)
 
     # Running per-env "closest approach" trackers, frozen into the lists above
     # when each episode ends, then reset for the next rollout in that env.
     best_frac = torch.zeros(env.num_envs, device=device)
     min_dist = torch.full((env.num_envs,), float("inf"), device=device)
+    # Tip off-axis distance sampled at the closest-approach step (the moment of
+    # min tip->seat distance), so it reads as "how off-centre was the tip when
+    # it got nearest the seat" rather than a min taken at an unrelated instant.
+    lateral_at_min = torch.full((env.num_envs,), float("inf"), device=device)
 
     target = args_cli.n_episodes
 
@@ -395,10 +537,13 @@ def main() -> None:
             action = policy.select_action(batch)
             action = postprocessor(action)
             # Track closest approach from the pre-step (in-episode) obs.
-            frac, dist = _progress_metrics(obs)
+            frac, dist, lateral = _progress_metrics(obs)
             if frac is not None:
                 best_frac = torch.maximum(best_frac, frac)
+                improved = dist < min_dist
                 min_dist = torch.minimum(min_dist, dist)
+                # Sample the axis offset at the step that set a new closest approach.
+                lateral_at_min = torch.where(improved, lateral, lateral_at_min)
             if args_cli.save_videos:
                 # Snapshot host uint8 frames for each env: the policy-camera
                 # strip and (if enabled) the third-person overview.
@@ -431,22 +576,27 @@ def main() -> None:
                 ep_lengths.append(length)
                 bf = float(best_frac[eid].item())
                 md = float(min_dist[eid].item())
+                ax = float(lateral_at_min[eid].item())
                 ep_best_frac.append(bf)
                 ep_min_dist.append(md)
+                ep_axis_offset.append(ax)
                 md_str = "n/a" if md == float("inf") else f"{md * 1000:.1f}mm"
+                ax_str = "n/a" if ax == float("inf") else f"{ax * 1000:.1f}mm"
                 print(
                     f"[eval] ep {n_total}/{target}  env={eid}  outcome={outcome:<18}  "
-                    f"len={length:<5}  best_insert={bf:.2f}  closest={md_str}",
+                    f"len={length:<5}  best_insert={bf:.2f}  closest={md_str}  axis_off={ax_str}",
                     file=sys.stderr,
                 )
                 metrics_csv.write(
                     f"{n_total - 1},{eid},{outcome},{length},{bf:.4f},"
-                    f"{'' if md == float('inf') else f'{md * 1000:.2f}'}\n"
+                    f"{'' if md == float('inf') else f'{md * 1000:.2f}'},"
+                    f"{'' if ax == float('inf') else f'{ax * 1000:.2f}'}\n"
                 )
                 metrics_csv.flush()
                 # Reset closest-approach trackers for this env's next rollout.
                 best_frac[eid] = 0.0
                 min_dist[eid] = float("inf")
+                lateral_at_min[eid] = float("inf")
                 if args_cli.save_videos and cams_buffers[eid]:
                     fps = max(1, round(1.0 / env.policy_dt))
                     stem = f"episode_{n_total - 1:03d}_env{eid}_{outcome}"
@@ -474,8 +624,17 @@ def main() -> None:
         best_md = min(finite_dist)
         progress_lines = (
             f"  insertion progress (best, 1.0=seated):  mean {mean_frac:.2f}   median {med_frac:.2f}\n"
-            f"  closest TCP->seat distance:             mean {mean_md * 1000:.1f} mm   best {best_md * 1000:.1f} mm\n"
+            f"  closest tip->seat distance:             mean {mean_md * 1000:.1f} mm   best {best_md * 1000:.1f} mm\n"
         )
+        finite_ax = [a for a in ep_axis_offset if a != float("inf")]
+        if finite_ax:
+            mean_ax = sum(finite_ax) / len(finite_ax)
+            med_ax = statistics.median(finite_ax)
+            best_ax = min(finite_ax)
+            progress_lines += (
+                f"  tip off-axis at closest approach:       mean {mean_ax * 1000:.1f} mm   "
+                f"median {med_ax * 1000:.1f} mm   best {best_ax * 1000:.1f} mm\n"
+            )
     summary = (
         f"\n{'=' * 60}\n"
         f"Eval over {n_total} episodes (ckpt={args_cli.ckpt}):\n"
