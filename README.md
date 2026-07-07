@@ -2,7 +2,7 @@
 
 Simulaciono okruženje (Isaac Lab / Isaac Sim) i pipeline imitacionog učenja
 (LeRobot: ACT i Diffusion Policy) za zadatak ubacivanja SFP kabla u port
-UR5e robotom. Razvijeno kao diplomski rad na ETF-u (Mihajlo Stevanović, 2026).
+UR5e robotom.
 
 > **Novi na projektu?** Kreni od [docs/01_pokretanje_okruzenja.md](docs/01_pokretanje_okruzenja.md)
 > i idi redom. Sve što je otkriveno teškim putem je zapisano tamo.
