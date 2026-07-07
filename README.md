@@ -7,6 +7,17 @@ UR5e robotom. Razvijeno kao diplomski rad na ETF-u (Mihajlo Stevanović, 2026).
 > **Novi na projektu?** Kreni od [docs/01_pokretanje_okruzenja.md](docs/01_pokretanje_okruzenja.md)
 > i idi redom. Sve što je otkriveno teškim putem je zapisano tamo.
 
+## 📦 Arhiva modela i rezultata (Hugging Face, javno)
+
+Veliki artefakti ne stoje u git-u — trajno su arhivirani na HF nalogu autora:
+
+- **Checkpointi svih 6 politika** (DP/ACT × 1k/10k/30k demonstracija):
+  [huggingface.co/Mihajlo04/aic-port-insertion-policies](https://huggingface.co/Mihajlo04/aic-port-insertion-policies)
+- **Kurirani eval rezultati** (metrike, analize, mp4 snimci):
+  [huggingface.co/datasets/Mihajlo04/aic-port-insertion-eval](https://huggingface.co/datasets/Mihajlo04/aic-port-insertion-eval)
+
+Uputstvo za vraćanje na očekivane putanje: [docs/06_artefakti_i_arhiva.md](docs/06_artefakti_i_arhiva.md).
+
 ## Pipeline ukratko
 
 ```
