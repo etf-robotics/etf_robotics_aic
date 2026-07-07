@@ -17,7 +17,7 @@ Asseti na koje se odnose žive u:
 ## Pokretanje
 
 Skripte importuju `pxr`, pa moraju kroz Isaac Sim python **unutar docker kontejnera**
-(vidi [docs/01_pokretanje.md](../../docs/01_pokretanje.md)):
+(vidi [docs/01_pokretanje_okruzenja.md](../../docs/01_pokretanje_okruzenja.md)):
 
 ```bash
 ./isaaclab.sh -p etf_robotics_aic/scripts/asset_fixes/fix_connector_normals.py --usd putanja/do/asset.usd
