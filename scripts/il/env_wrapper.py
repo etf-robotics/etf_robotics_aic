@@ -45,8 +45,20 @@ class PortInsertionEnv:
         device: str,
         use_fabric: bool = True,
         action_name: str = "arm_action",
+        extra_sensors: dict | None = None,
     ) -> "PortInsertionEnv":
+        """Build the Gym env.
+
+        ``extra_sensors`` (name -> SensorBaseCfg) are attached to the scene
+        cfg *before* construction. They live in the scene but are **not** added
+        to any observation group, so the policy never sees them — use this to
+        bolt on eval-only sensors (e.g. a third-person overview camera for
+        video) without touching the committed task config or the BC dataset
+        schema. Caller reads them via ``env.unwrapped.scene[<name>]``.
+        """
         cfg = parse_env_cfg(task, device=device, num_envs=num_envs, use_fabric=use_fabric)
+        for name, sensor_cfg in (extra_sensors or {}).items():
+            setattr(cfg.scene, name, sensor_cfg)
         gym_env = gym.make(task, cfg=cfg)
         return cls(gym_env, action_name=action_name)
 
