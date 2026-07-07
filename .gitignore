@@ -76,3 +76,6 @@ tests/
 
 # Diplomski rad (zaseban git repo)
 DIPLOMSKI/
+
+# Claude Code (lokalni skillovi i podešavanja)
+.claude/
